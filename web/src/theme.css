@@ -1,0 +1,112 @@
+/* ─────────────────────────────────────────────────────────────
+   hr-desk · 设计 token —— 白纸黑字
+   参照小米 MiMo 官网的纸感：白底、灰阶、发丝线、黑色块、衬线标题。
+   变量名沿用 --yuzhe-* 前缀（历史惯例），值全部换成纸感 token。
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+
+  /* 底色 */
+  --yuzhe-bg: #ffffff; /* 页面底 */
+  --yuzhe-bg-soft: #f7f8fa; /* 次级底：侧栏、面板间隔条 */
+  --yuzhe-bg-hover: #f5f5f5; /* 悬停底 */
+  --yuzhe-surface: #ffffff; /* 卡片、输入框的「纸面」——深色版整体翻面 */
+
+  /* 墨色 */
+  --yuzhe-ink: #1f2329; /* 正文 */
+  --yuzhe-ink-strong: #1d2129; /* 标题 */
+  --yuzhe-ink-dim: #666666; /* 次级文字 */
+  --yuzhe-ink-faint: #9499a0; /* 弱化文字、占位符 */
+
+  /* 线 */
+  --yuzhe-line: #dee0e3; /* 常规边线 */
+  --yuzhe-line-soft: #ebedf0; /* 更浅的分隔 */
+  --yuzhe-line-strong: #323232; /* 深边：强调、焦点 */
+
+  /* 黑块（这套皮的签名：纯黑的一块） */
+  --yuzhe-black: #000000;
+  --yuzhe-on-black: #f5f5f5;
+
+  /* 状态：只给功能让路，全程灰阶优先 */
+  --yuzhe-ok: #2e7d4f;
+  --yuzhe-danger: #c9362c;
+
+  /* 形 */
+  --yuzhe-r-s: 4px; /* 微件 */
+  --yuzhe-r-m: 6px; /* 按钮、小件 */
+  --yuzhe-r-l: 8px; /* 卡片 */
+  --yuzhe-r-xl: 16px; /* 弹层、抽屉 */
+
+  --yuzhe-shadow: 0 6px 12px rgba(31, 35, 41, 0.06);
+  --yuzhe-shadow-pop: 0 12px 32px rgba(31, 35, 41, 0.14);
+
+  /* 字：标题用衬线（签名母题），正文 UI 用无衬线 */
+  --font-display:
+    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", SimSun, serif;
+  --font-ui:
+    system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   晨曦微蓝：同一张纸泡进清晨的冷色里。
+   版式、字、圆角全部不动，只换灰阶的色相 —— 蓝灰的纸、深蓝的章。
+   ───────────────────────────────────────────────────────────── */
+[data-theme="dawn"] {
+  color-scheme: light;
+
+  --yuzhe-bg: #fbfcfe;
+  --yuzhe-bg-soft: #f1f5fa;
+  --yuzhe-bg-hover: #ecf2f8;
+  --yuzhe-surface: #ffffff;
+
+  --yuzhe-ink: #1d2a38;
+  --yuzhe-ink-strong: #16222e;
+  --yuzhe-ink-dim: #5b6d7e;
+  --yuzhe-ink-faint: #90a2b2;
+
+  --yuzhe-line: #d7e1eb;
+  --yuzhe-line-soft: #e4ecf3;
+  --yuzhe-line-strong: #2c4a68;
+
+  --yuzhe-black: #1d3a5f; /* 签名块：深蓝墨 */
+  --yuzhe-on-black: #f2f7fc;
+
+  --yuzhe-ok: #2e7d6a;
+  --yuzhe-danger: #c04a3e;
+
+  --yuzhe-shadow: 0 6px 12px rgba(29, 42, 56, 0.07);
+  --yuzhe-shadow-pop: 0 12px 32px rgba(29, 42, 56, 0.15);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   夜墨：翻到纸的背面。黑章变白章，其余关系（灰阶、发丝线）原样保留。
+   ───────────────────────────────────────────────────────────── */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --yuzhe-bg: #17191c;
+  --yuzhe-bg-soft: #1c1f23;
+  --yuzhe-bg-hover: #26292e;
+  --yuzhe-surface: #1d2024;
+
+  --yuzhe-ink: #d4d8dc;
+  --yuzhe-ink-strong: #f0f2f4;
+  --yuzhe-ink-dim: #9aa1a9;
+  --yuzhe-ink-faint: #6b7178;
+
+  --yuzhe-line: #33373d;
+  --yuzhe-line-soft: #2a2e33;
+  --yuzhe-line-strong: #e8eaec;
+
+  --yuzhe-black: #f0f2f4; /* 签名块翻成白 */
+  --yuzhe-on-black: #17191c;
+
+  --yuzhe-ok: #52a87c;
+  --yuzhe-danger: #e0655a;
+
+  --yuzhe-shadow: 0 6px 12px rgba(0, 0, 0, 0.35);
+  --yuzhe-shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+}

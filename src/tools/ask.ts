@@ -1,0 +1,84 @@
+// 回头问他一句。
+//
+// 为什么要有这个工具：以前她卡在一个「只有他能定」的岔口上时，只有两条路 ——
+// 在正文里问一句就停下（话是说出口了，但「正在等他答」这件事没有任何记录，
+// 他甚至可能没注意到那是一句问话），或者自己猜一个接着往下做。
+// 有了它，问题变成一个摆在眼前、可以被回答的东西：他答了，她下一轮自然接得上；
+// 他不答，她也可以自己拿主意，不会一直卡在那里。
+
+import { tool } from "ai";
+import { z } from "zod";
+import type { AskEntry } from "../agent/state";
+import type { ToolCtx } from "./types";
+
+/**
+ * 同一场对话里最多摆几个没答的问题。
+ *
+ * 为什么要有这条上限：她要是连着几轮都在问，卡片会一层层叠在输入框上面，
+ * 看着像一墙便签，人反而一个都不想答了。到了这个数就让她先自己拿主意，
+ * 或者把新问题并进已有的那条里 —— 那也比再叠一张强。
+ */
+const PENDING_CAP = 3;
+
+export function askTools(ctx: ToolCtx) {
+  return {
+    ask: tool({
+      description:
+        "遇到一个只有他能定的地方时，回头问他一句。问题会变成一张卡片摆在他眼前，他可以点你给的选项，也可以自己写。" +
+        "用它的时机：你正往下做，但这一步的走向取决于他的偏好或事实，猜错了要白做一遍。" +
+        "两件事必须做到：① 同一轮的回复正文里把这个问题说出来 —— 卡片只是入口，只留一张卡不写字，读起来像话说到一半突然卡住；" +
+        "② 问完就停在这一步，别自己替他答了再往下做。已经问过、他还没答的，别重复再问一遍。",
+      inputSchema: z.object({
+        question: z
+          .string()
+          .describe(
+            "要问他的那句话，写成一个具体的问题，别写成「请确认以下事项」",
+          ),
+        options: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "可选项：只在你估计他多半会从这几条里挑时给。给了选项他仍然可以自己写",
+          ),
+        why: z
+          .string()
+          .optional()
+          .describe(
+            "你为什么问 —— 这个答案会被拿去做哪一步，让他知道这不是随口一问",
+          ),
+      }),
+      execute: async (a) => {
+        const text = (a.question || "").trim();
+        if (!text) return "问题不能为空 —— 说清楚你想问什么。";
+
+        const sessionId = ctx.state.activeSession;
+        const pending = ctx.state.asks.filter((x) => x.sessionId === sessionId);
+        // 已经问过一样的就别再问一遍：那不是催，是噪音
+        if (pending.some((x) => x.text === text))
+          return `这个问题已经摆在他面前了：「${text}」。等他答。`;
+
+        if (pending.length >= PENDING_CAP) {
+          return (
+            `这场对话里已经压着 ${pending.length} 个没答的问题（${pending.map((x) => `「${x.text}」`).join("")}）。` +
+            "先别再叠了：要么把新问题并进其中一条，要么自己挑一个合理的做法往下走，做完把选择告诉他。"
+          );
+        }
+
+        const options = (a.options || [])
+          .map((o) => o.trim())
+          .filter(Boolean)
+          .slice(0, 6);
+        const entry: AskEntry = {
+          id: crypto.randomUUID(),
+          text,
+          options,
+          why: (a.why || "").trim(),
+          askedAt: new Date().toISOString(),
+          sessionId,
+        };
+        ctx.patchState({ asks: [...ctx.state.asks, entry] });
+        return `问到了：「${text}」${options.length ? `（给了 ${options.length} 个选项）` : ""}。现在停下，等他答。`;
+      },
+    }),
+  };
+}

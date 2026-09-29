@@ -1,0 +1,12 @@
+# 仓库内统一 LF：跨平台协作时 diff 不被行尾噪音淹没
+* text=auto eol=lf
+
+# 二进制一律不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary

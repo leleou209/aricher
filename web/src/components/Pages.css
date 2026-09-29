@@ -1,0 +1,1450 @@
+/* ─────────────────────────────────────────────────────────────
+   Pages.css —— Pages.tsx 的组件样式（白纸黑字）
+   覆盖四个组件：Backdrop（背景）、Shield（兜底）、
+   ChatSidebar（对话侧栏）、SettingsPage（设置页）。
+   只用 theme.css 的灰阶 token 与 styles.css 的共享原语；
+   彩色装饰、暗色硬编码一概不留。
+   ───────────────────────────────────────────────────────────── */
+
+/* ── 背景：一张白纸 ──
+   旧版的光晕/点阵/飘落动画已全部铲掉。只剩一层极淡的顶部微晕，
+   用 --yuzhe-bg-soft 染出纸面起伏；z-index 压到内容底下，无动画。 */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      120% 56% at 50% -8%,
+      var(--yuzhe-bg-soft) 0%,
+      rgba(247, 248, 250, 0) 62%
+    ),
+    var(--yuzhe-bg);
+}
+
+/* ── Shield：出错兜底的纸感卡片 ── */
+.shield {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+}
+
+.shield-card {
+  width: min(100%, 480px);
+  padding: 22px 24px;
+}
+
+.shield-card h3 {
+  font-size: 17px;
+}
+
+.shield-msg {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--yuzhe-ink-dim);
+  word-break: break-all;
+}
+
+.shield-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.shield-card .row-actions {
+  margin-top: 16px;
+}
+
+/* ═══════════════════════════════════════════════
+   对话页侧栏
+   ═══════════════════════════════════════════════ */
+
+.chat-sidebar {
+  flex: none;
+  width: 268px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--yuzhe-bg);
+  border-right: 1px solid var(--yuzhe-line);
+}
+
+/* 顶部签名块：纯黑底、白色衬线名字，整套皮的记号 */
+.sidebar-header {
+  flex: none;
+  padding: 14px 14px 8px;
+}
+
+.brand-block {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 13px 14px 12px;
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  border-radius: var(--yuzhe-r-l);
+}
+
+.brand-block .brand-name {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--yuzhe-on-black);
+}
+
+.brand-block .brand-sub {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: rgba(245, 245, 245, 0.58);
+}
+
+/* 在线状态住进签名块右侧：ericher 卡撤掉后，这里是唯一的「他在不在」 */
+.brand-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--yuzhe-ok);
+}
+
+.brand-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.brand-status[data-off="true"] {
+  color: rgba(245, 245, 245, 0.58);
+}
+
+/* 新建对话：白底发丝线的纸面按钮，黑留给品牌块 */
+.new-chat-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 10px 14px 4px;
+  height: 34px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.new-chat-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  border-color: var(--yuzhe-line-strong);
+}
+
+/* 顶部导航：当前页 = 左侧 2px 黑边 + 加重 */
+.side-nav {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 6px;
+}
+
+.side-nav button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.side-nav button:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.side-nav button.on {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink-strong);
+  font-weight: 600;
+}
+
+.side-nav button.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--yuzhe-black);
+}
+
+/* 翻旧账的搜索框 */
+.side-search {
+  flex: none;
+  position: relative;
+  margin: 4px 14px 8px;
+}
+
+.side-search > svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--yuzhe-ink-faint);
+  pointer-events: none;
+}
+
+.side-search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 26px 0 28px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.side-search input::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+.side-search input:focus {
+  border-color: var(--yuzhe-line-strong);
+}
+
+.side-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.side-search-clear:hover {
+  color: var(--yuzhe-ink);
+  background: var(--yuzhe-bg-hover);
+}
+
+/* 中段滚动区：列表再长也只滚这里 */
+.sidebar-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 10px 10px;
+}
+
+.history-label {
+  padding: 8px 6px 6px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--yuzhe-ink-faint);
+}
+
+.chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 会话行：当前项 = 浅灰底 + 左侧 2px 黑边 + 标题加重 */
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--yuzhe-r-m);
+  transition: background 0.15s;
+}
+
+.history-item:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.history-item.on {
+  background: var(--yuzhe-bg-hover);
+  box-shadow: inset 2px 0 0 var(--yuzhe-black);
+}
+
+.history-item.on .history-title {
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+/* 未读提示的第一阶段：新会话刚出现时闪几下把人叫过来。
+   底色是静态的 —— 全局关动效（body[data-motion="off"]）时，
+   动画停了，这几秒的浅灰高亮仍然在。 */
+.history-item.flash {
+  background: var(--yuzhe-bg-hover);
+  animation: sidebar-flash 1.2s ease-in-out 3;
+}
+
+@keyframes sidebar-flash {
+  0%,
+  100% {
+    background: var(--yuzhe-bg-hover);
+  }
+  50% {
+    background: #ececec;
+  }
+}
+
+.history-open {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 6px 0 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-open > svg {
+  flex: none;
+  color: var(--yuzhe-ink-faint);
+}
+
+.history-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 未读圆点：闪完之后留下的那颗黑点，点进去（后端清掉 unread）就消失 */
+.history-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--yuzhe-black);
+}
+
+.history-badge {
+  flex: none;
+  padding: 3px 5px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--yuzhe-ink-dim);
+}
+
+/* 管理员的行内工具：悬停行时浮现 */
+.history-tools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.history-item:hover .history-tools,
+.history-item:focus-within .history-tools {
+  opacity: 1;
+}
+
+.history-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    box-shadow 0.15s;
+}
+
+.history-edit:hover {
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  box-shadow: inset 0 0 0 1px var(--yuzhe-line);
+}
+
+.history-edit.danger:hover {
+  color: var(--yuzhe-danger);
+}
+
+/* 已归档分组：一条发丝线隔开的折叠头 */
+.history-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.history-group:hover {
+  color: var(--yuzhe-ink);
+}
+
+.history-group > svg {
+  color: var(--yuzhe-ink-faint);
+}
+
+.history-group-n {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 翻旧账的命中条目 */
+.recall-hit {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.recall-hit:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.recall-where {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.recall-where > svg {
+  flex: none;
+}
+
+.recall-snippet {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink-dim);
+}
+
+.recall-snippet b {
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+/* 空态与加载态（文案在 tsx 里） */
+.empty-sm {
+  padding: 16px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 底部身份条 */
+.sidebar-footer {
+  flex: none;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  padding: 10px 14px 12px;
+}
+
+.character-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.avatar-ring {
+  position: relative;
+  flex: none;
+}
+
+/* 头像：签名块的缩小版 */
+.character-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  font-family: var(--font-display);
+  font-size: 15px;
+  border-radius: var(--yuzhe-r-m);
+}
+
+.character-meta {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.character-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--yuzhe-ink-strong);
+}
+
+.character-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--yuzhe-ok);
+}
+
+.character-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.character-status[data-off="true"] {
+  color: var(--yuzhe-ink-faint);
+}
+
+.settings-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.settings-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+/* ── 手机断点：侧栏变贴左抽屉 ──
+   App 那边有 z-index 80 的 .sidebar-mask 遮罩，抽屉抬到 85 压住它。 */
+@media (max-width: 860px) {
+  .chat-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 85;
+    width: min(86vw, 320px);
+    border-right: 1px solid var(--yuzhe-line);
+    transform: translateX(-102%);
+    transition: transform 0.2s ease-out;
+  }
+
+  .chat-sidebar.open {
+    transform: translateX(0);
+    box-shadow: var(--yuzhe-shadow-pop);
+  }
+
+  /* 触屏没有悬停：行内工具常显 */
+  .history-tools {
+    opacity: 1;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   设置页：左节右容两栏
+   ═══════════════════════════════════════════════ */
+
+.settings-app {
+  height: 100dvh;
+  display: flex;
+  background: var(--yuzhe-bg);
+}
+
+.settings-sidebar {
+  flex: none;
+  width: 244px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--yuzhe-line);
+}
+
+/* 设置侧栏的头部是「返回 + 标题」一行 */
+.settings-sidebar .sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 10px;
+}
+
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.back-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.sidebar-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+  letter-spacing: 0.02em;
+}
+
+.settings-nav {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 10px 12px;
+}
+
+.nav-group {
+  margin-bottom: 14px;
+}
+
+/* 分组小标题：衬线小字，像书页上的章节眉 */
+.nav-group-title {
+  padding: 0 10px 6px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.nav-item > svg {
+  flex: none;
+}
+
+.nav-item:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.nav-item.on {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink-strong);
+  font-weight: 600;
+}
+
+/* 当前节的那道黑着重线 */
+.nav-indicator {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+
+.nav-item.on .nav-indicator {
+  background: var(--yuzhe-black);
+}
+
+.nav-label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右栏：内容列限宽居中，滚动给外层 */
+.settings-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-content {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 30px 26px 72px;
+}
+
+.page-header {
+  margin-bottom: 22px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.page-desc {
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--yuzhe-ink-dim);
+}
+
+/* 设置卡：白纸卡片的默认容器 */
+.settings-card {
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow);
+}
+
+.card-header {
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.card-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--yuzhe-ink-dim);
+}
+
+/* 只读表单：灰底示意「看得到、改不了」 */
+.form-field {
+  margin-bottom: 12px;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.form-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-bg-soft);
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  outline: none;
+}
+
+/* 信息行列表：行间一道发丝线 */
+.toggle-list {
+  margin-top: 4px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+}
+
+.toggle-row + .toggle-row {
+  border-top: 1px solid var(--yuzhe-line-soft);
+}
+
+.toggle-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.toggle-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-dim);
+}
+
+.toggle-text {
+  min-width: 0;
+}
+
+.toggle-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--yuzhe-ink-strong);
+}
+
+.toggle-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 状态小签 */
+.tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  font-size: 11px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.tag.ok {
+  color: var(--yuzhe-ok);
+  border-color: transparent;
+}
+
+.tag.ghost {
+  color: var(--yuzhe-ink-faint);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 退出登录：普通纸面按钮，不抢戏 */
+.save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 5px 14px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.save-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  border-color: var(--yuzhe-line-strong);
+}
+
+/* 思考深度：两张可选卡，选中 = 黑边 */
+.style-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* 模式指派：两个槽位各挑一套模型（管理员） */
+.style-assign {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--yuzhe-line);
+}
+
+.style-assign-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.style-assign-row > .meta {
+  flex: none;
+  min-width: 64px;
+}
+
+.style-assign-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.style-card {
+  position: relative;
+  display: block;
+  padding: 16px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  background: var(--yuzhe-surface);
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.style-card:hover {
+  border-color: var(--yuzhe-line-strong);
+}
+
+.style-card:has(input:checked) {
+  border-color: var(--yuzhe-black);
+  box-shadow: inset 0 0 0 1px var(--yuzhe-black);
+}
+
+.style-card:has(input:focus-visible) {
+  outline: 2px solid var(--yuzhe-line-strong);
+  outline-offset: 2px;
+}
+
+.style-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.style-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 10px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  color: var(--yuzhe-ink-dim);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.style-card:has(input:checked) .style-icon {
+  background: var(--yuzhe-black);
+  border-color: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+.style-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.style-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 主题预览块：灰阶小样 */
+.theme-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.theme-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.theme-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.theme-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 86px;
+  height: 58px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+/* 各主题的预览小样：白纸 / 蓝纸 / 夜墨 / 对半（跟随系统） */
+.theme-paper {
+  background: var(--yuzhe-surface);
+}
+
+.theme-dawn {
+  background: linear-gradient(160deg, #ffffff 55%, #e8f0f8 100%);
+}
+
+.theme-dark {
+  background: linear-gradient(160deg, #26292e 0%, #17191c 100%);
+}
+
+.theme-system {
+  background: linear-gradient(135deg, #ffffff 50%, #1d2024 50%);
+}
+
+/* 预览中央的小黑章：主题的签名 */
+.theme-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--yuzhe-black);
+}
+
+.theme-dawn .theme-ring {
+  background: #1d3a5f;
+}
+
+.theme-dark .theme-ring {
+  background: #f0f2f4;
+}
+
+.theme-system .theme-ring {
+  background: var(--yuzhe-line-strong);
+  opacity: 0.5;
+}
+
+.theme-option:has(input:checked) .theme-preview {
+  border-color: var(--yuzhe-black);
+  box-shadow: inset 0 0 0 1px var(--yuzhe-black);
+}
+
+.theme-name {
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.theme-option:has(input:checked) .theme-name {
+  color: var(--yuzhe-ink-strong);
+  font-weight: 500;
+}
+
+/* 开关：选中 = 黑轨白钮 */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: 999px;
+  background: var(--yuzhe-surface);
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.toggle-slider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--yuzhe-ink-faint);
+  transition:
+    transform 0.15s,
+    background 0.15s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--yuzhe-black);
+  border-color: var(--yuzhe-black);
+}
+
+.toggle-switch input:checked + .toggle-slider::after {
+  transform: translateX(18px);
+  background: var(--yuzhe-surface);
+}
+
+/* ── 身份卡：左下角「我」这张小卡。跟 ericher 的在线卡是两回事：
+   chip 是常态入口，pop 是点开后的身份弹层（详情 / 升级 / 解卡）。 ── */
+
+.identity-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+/* 常态小条：一行白卡，称呼 + 身份标签，和 character-card 同一套语言 */
+.identity-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.identity-chip:hover {
+  border-color: var(--yuzhe-line-strong, var(--yuzhe-line));
+  background: var(--yuzhe-bg-soft);
+}
+
+.identity-chip-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+/* 身份标签：临时是灰描边，长期/管理员是黑底白字 —— 亮的那一档是持卡的那一档 */
+.identity-tag {
+  flex: none;
+  padding: 1.5px 7px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.identity-tag.long {
+  border-color: var(--yuzhe-black);
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  font-weight: 500;
+}
+
+/* 点开的透明遮罩：收在弹层后面一层，点击任意处关掉 */
+.identity-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+}
+
+/* 身份弹层：从 footer 这张 chip 往上展开 */
+.identity-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: min(280px, calc(100vw - 48px));
+  padding: 14px 14px 12px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  box-shadow: var(--yuzhe-shadow-pop);
+  animation: rise-in 0.16s ease-out;
+}
+
+.identity-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.identity-who {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+/* 详情两列：dt 是灰色小标，dd 是正文 */
+.identity-rows {
+  margin: 10px 0 2px;
+  display: grid;
+  gap: 7px;
+}
+
+.identity-rows > div {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.identity-rows dt {
+  font-size: 11.5px;
+  color: var(--yuzhe-ink-faint);
+  white-space: nowrap;
+}
+
+.identity-rows dd {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--yuzhe-ink);
+  overflow-wrap: anywhere;
+}
+
+.identity-dim {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink-dim);
+}
+
+.identity-err {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--yuzhe-danger);
+}
+
+/* 临时升级表单：纵向一列小输入框 */
+.identity-form {
+  margin-top: 10px;
+  display: grid;
+  gap: 7px;
+}
+
+.identity-form input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s, 6px);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-strong);
+  font-size: 12.5px;
+}
+
+.identity-form input:focus {
+  outline: none;
+  border-color: var(--yuzhe-black);
+}
+
+.identity-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.identity-btn {
+  flex: 1;
+  height: 30px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s, 6px);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.identity-btn:hover {
+  border-color: var(--yuzhe-black);
+}
+
+.identity-btn.primary {
+  border-color: var(--yuzhe-black);
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  font-weight: 600;
+}
+
+.identity-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ── 手机断点：设置页上下堆叠，导航横滑 ── */
+@media (max-width: 860px) {
+  .settings-app {
+    flex-direction: column;
+  }
+
+  .settings-sidebar {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--yuzhe-line);
+  }
+
+  .settings-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: none;
+    padding: 0 10px 10px;
+  }
+
+  .nav-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    margin: 0;
+  }
+
+  .nav-group + .nav-group {
+    margin-left: 4px;
+    padding-left: 8px;
+    border-left: 1px solid var(--yuzhe-line-soft);
+  }
+
+  .nav-group-title {
+    padding: 0 2px;
+    white-space: nowrap;
+  }
+
+  .nav-item {
+    width: auto;
+    height: 30px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .nav-indicator {
+    display: none;
+  }
+
+  .settings-content {
+    padding: 18px 14px 48px;
+  }
+
+  .style-options {
+    grid-template-columns: 1fr;
+  }
+}

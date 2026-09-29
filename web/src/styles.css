@@ -1,0 +1,952 @@
+/* ─────────────────────────────────────────────────────────────
+   hr-desk · 全局样式 —— 白纸黑字
+   这里只放三样东西：底子（reset/排版）、共享原语（按钮/卡片/弹层）、
+   App 骨架自己的类。各组件的样式在组件同目录的独立 CSS 文件里。
+   ───────────────────────────────────────────────────────────── */
+
+/* ── 底子 ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--yuzhe-bg);
+  color: var(--yuzhe-ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 衬线标题是这套皮的签名：所有大标题一律衬线，正文一律无衬线 */
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+  letter-spacing: 0.01em;
+}
+
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: var(--font-ui);
+}
+
+a {
+  color: inherit;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+}
+
+img {
+  max-width: 100%;
+}
+
+::selection {
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--yuzhe-line);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── 排版小件 ── */
+.t-serif {
+  font-family: var(--font-display);
+}
+
+.dim {
+  color: var(--yuzhe-ink-dim);
+}
+
+.kicker {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 按钮 ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 5px 16px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.btn:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: var(--yuzhe-black);
+  border-color: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+.btn-primary:hover {
+  background: #26282c;
+  border-color: #26282c;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+}
+
+.btn-ghost:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.btn-danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--yuzhe-danger);
+}
+
+.btn-danger:hover {
+  background: rgba(201, 54, 44, 0.08);
+}
+
+.btn-sm {
+  height: 26px;
+  padding: 3px 10px;
+  font-size: 13px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.icon-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+/* ── 表单 ── */
+.field {
+  width: 100%;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 14px;
+  padding: 7px 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.field::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+.field:focus {
+  border-color: var(--yuzhe-line-strong);
+}
+
+textarea.field {
+  resize: vertical;
+  line-height: 1.7;
+  min-height: 72px;
+}
+
+select.field {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+  margin: 0 0 6px;
+}
+
+/* ── 卡片与小件 ── */
+.card {
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow);
+}
+
+.hair {
+  border: 0;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  margin: 14px 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 3px 10px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-dim);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.chip:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.chip.on {
+  background: var(--yuzhe-black);
+  border-color: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+.badge-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--yuzhe-ink-faint);
+}
+
+.menu {
+  min-width: 140px;
+  padding: 4px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow-pop);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.menu-item.danger {
+  color: var(--yuzhe-danger);
+}
+
+.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--yuzhe-ink-faint);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--yuzhe-line);
+  border-top-color: var(--yuzhe-ink-dim);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* ── 弹层 ── */
+.overlay-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(31, 35, 41, 0.44);
+  animation: fade-in 0.15s ease-out;
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(92vw, 560px);
+  height: fit-content;
+  max-height: 90vh;
+  overflow: auto;
+  z-index: 100;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-xl);
+  box-shadow: var(--yuzhe-shadow-pop);
+  animation: rise-in 0.18s ease-out;
+}
+
+.drawer-right,
+.drawer-left {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: min(86vw, 420px);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: var(--yuzhe-surface);
+  box-shadow: var(--yuzhe-shadow-pop);
+}
+
+.drawer-right {
+  right: 0;
+  border-left: 1px solid var(--yuzhe-line);
+  animation: slide-in-r 0.2s ease-out;
+}
+
+.drawer-left {
+  left: 0;
+  border-right: 1px solid var(--yuzhe-line);
+  animation: slide-in-l 0.2s ease-out;
+}
+
+/* ── App 骨架 ── */
+.chat-app {
+  height: 100dvh;
+  display: flex;
+  background: var(--yuzhe-bg);
+}
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--yuzhe-surface);
+  border-bottom: 1px solid var(--yuzhe-line);
+}
+
+/* 会话列表在桌面上常驻，这个按钮只在手机上出现 */
+.menu-btn {
+  display: none;
+}
+
+.chat-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-subtitle {
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.messages-area {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+  padding: 26px 18px 14px;
+}
+
+.messages-area.dropping {
+  outline: 1.5px dashed var(--yuzhe-line-strong);
+  outline-offset: -10px;
+  background: var(--yuzhe-bg-hover);
+}
+
+.drop-hint {
+  position: fixed;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 60;
+  pointer-events: none;
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  font-size: 13px;
+  padding: 10px 18px;
+  border-radius: var(--yuzhe-r-m);
+}
+
+.sidebar-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(31, 35, 41, 0.44);
+  animation: fade-in 0.15s ease-out;
+}
+
+/* ── 输入区 ── */
+.input-area {
+  flex: none;
+  position: relative;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 8px 18px calc(12px + env(safe-area-inset-bottom));
+}
+
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 260px;
+  padding: 3px 8px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.attach-chip.reading {
+  border-style: dashed;
+}
+
+.attach-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-chip-note {
+  color: var(--yuzhe-ink-faint);
+  flex: none;
+}
+
+.attach-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 2px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  cursor: pointer;
+}
+
+.attach-chip-x:hover {
+  color: var(--yuzhe-danger);
+  background: var(--yuzhe-bg-hover);
+}
+
+/* 提问卡：黑边在左，像页边的一道着重线 */
+.ask-card {
+  margin-bottom: 8px;
+  padding: 12px 14px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-left: 3px solid var(--yuzhe-black);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow);
+  animation: rise-in 0.18s ease-out;
+}
+
+.ask-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.ask-title {
+  font-weight: 600;
+  color: var(--yuzhe-ink);
+}
+
+.ask-x {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  cursor: pointer;
+}
+
+.ask-x:hover {
+  color: var(--yuzhe-ink);
+  background: var(--yuzhe-bg-hover);
+}
+
+.ask-text {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ask-why {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ask-option {
+  height: 28px;
+  padding: 4px 12px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.ask-option:hover {
+  border-color: var(--yuzhe-black);
+}
+
+.ask-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.ask-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 「/」菜单：贴着输入框往上升 */
+.cmd-menu {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: calc(100% - 6px);
+  z-index: 40;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow-pop);
+  animation: rise-in 0.15s ease-out;
+}
+
+.cmd-menu-tip {
+  margin: 2px 6px 6px;
+  font-size: 11px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.cmd-menu-empty {
+  margin: 4px 8px;
+  padding: 6px 4px;
+  font-size: 13px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cmd-item:hover,
+.cmd-item.on {
+  background: var(--yuzhe-bg-hover);
+}
+
+.cmd-name {
+  flex: none;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.cmd-label {
+  flex: none;
+}
+
+.cmd-desc {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--yuzhe-ink-faint);
+}
+
+.input-wrapper {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.input-wrapper:focus-within {
+  border-color: var(--yuzhe-line-strong);
+  box-shadow: var(--yuzhe-shadow);
+}
+
+.chat-textarea {
+  flex: 1;
+  max-height: 160px;
+  padding: 6px 4px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.chat-textarea::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+.input-side-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.input-side-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.input-side-btn.listening {
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+.send-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    opacity 0.15s;
+}
+
+.send-button:hover {
+  background: #26282c;
+}
+
+.send-button:disabled {
+  background: var(--yuzhe-line);
+  cursor: default;
+}
+
+.send-button.stop {
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line-strong);
+  color: var(--yuzhe-ink);
+}
+
+.send-button.stop:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.input-hint {
+  margin: 8px 4px 0;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 门禁底 ── */
+.gate {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--yuzhe-bg);
+}
+
+/* ── 通知条 ── */
+.notice {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+  margin: 0 auto;
+  width: fit-content;
+  max-width: min(86vw, 480px);
+  z-index: 160;
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+  font-size: 13px;
+  padding: 9px 16px;
+  border-radius: var(--yuzhe-r-m);
+  box-shadow: var(--yuzhe-shadow-pop);
+  animation: rise-in 0.18s ease-out;
+}
+
+/* ── 动效 ── */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes slide-in-r {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+@keyframes slide-in-l {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* 动效开关关掉时，全部动画与过渡一并停住 */
+body[data-motion="off"] *,
+body[data-motion="off"] *::before,
+body[data-motion="off"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* 系统开了减弱动效，同样照办 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── 手机断点 ── */
+@media (max-width: 860px) {
+  .menu-btn {
+    display: inline-flex;
+  }
+
+  .chat-header {
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .chat-title {
+    font-size: 15px;
+  }
+
+  /* 窄屏上按钮只留图标，全名放进 title（悬停可看） */
+  .chat-actions .chip span {
+    display: none;
+  }
+
+  .chat-actions .chip {
+    padding: 3px 8px;
+  }
+
+  .messages-area {
+    padding: 16px 10px 10px;
+  }
+
+  .input-area {
+    padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .cmd-menu {
+    left: 10px;
+    right: 10px;
+  }
+
+  .cmd-desc {
+    display: none;
+  }
+
+  /* 空闲提示那行是给键盘写的，手机上整行收掉 */
+  .input-hint.desk {
+    display: none;
+  }
+}

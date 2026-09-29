@@ -1,0 +1,17 @@
+{
+  "name": "ericher 接待台",
+  "short_name": "ericher",
+  "description": "ericher 的接待台：说事、递话、查档，能办的当场办。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,407 @@
+// guest_types：多档来客类型的名册。
+//
+// 门口原来只有两把钥匙（管理员 / 前台），来客进了门能用的东西也就只有一种组合。
+// 这张表把「能进门的密码」拆成若干档：管理员给每一档起名、设密码、
+// 勾上它能用哪些对外工具（检索 / 画画 / 记忆），再写一句接待说明 ——
+// 谁拿哪把钥匙进门，进门就被按哪一档待。
+//
+// 密码存 SHA-256 摘要（hex），不存明文。验法是把来的人口令也过一遍摘要再比：
+// 摘要不可逆，所以库里泄了也撞不回原口令。老条目还是明文的照常能验
+// （verifyStoredPassword 兼容两代），管理员下次改那一档的密码时就地升级成摘要。
+//
+// 表只建在主人那间：类型是这张台子的配置，不是哪位来客的私物；
+// 来客那间只在连接鉴权时拿到一份去掉密码的快照（见 cowork.ts 的 onConnect）。
+
+import { timingSafeEqual } from "../auth";
+import type { SqlTag } from "./state";
+
+export interface GuestTypeRow {
+  id: string;
+  name: string;
+  /** SHA-256 摘要（hex）；老条目可能是明文，验密码时两代都认 */
+  password: string;
+  /** 接待说明：进提示词，告诉 ericher 这一档该怎么待 */
+  note: string;
+  permSearch: boolean;
+  permDraw: boolean;
+  permMemory: boolean;
+  /** 记事本（长期使用者的私人草稿本） */
+  permNotes: boolean;
+  /** 云盘存储（上传/管理自己的文件） */
+  permFiles: boolean;
+  /** 公开内容与公开文件（往公共区放东西） */
+  permPublic: boolean;
+  active: boolean;
+  created: string;
+}
+
+/** 对外回显的行：剥掉密码。摘要也不给 —— 管理员忘了口令就重设，没有「查回来看」这条路 */
+export type GuestTypePublic = Omit<GuestTypeRow, "password">;
+
+interface TypeRow {
+  id: string;
+  name: string;
+  password: string;
+  note: string;
+  perm_search: number | boolean;
+  perm_draw: number | boolean;
+  perm_memory: number | boolean;
+  perm_notes: number | boolean;
+  perm_files: number | boolean;
+  perm_public: number | boolean;
+  active: number | boolean;
+  created: string;
+}
+
+/** 新建一档的入参；adminPw / gatePw 是 env 两个内置口令，查重用 */
+export interface GuestTypeInput {
+  name: string;
+  password: string;
+  note?: string;
+  permSearch?: boolean;
+  permDraw?: boolean;
+  permMemory?: boolean;
+  permNotes?: boolean;
+  permFiles?: boolean;
+  permPublic?: boolean;
+}
+
+/** 改一档的入参：字段缺省（undefined）不动。改密码同样要过查重 */
+export interface GuestTypePatch {
+  name?: string;
+  password?: string;
+  note?: string;
+  permSearch?: boolean;
+  permDraw?: boolean;
+  permMemory?: boolean;
+  permNotes?: boolean;
+  permFiles?: boolean;
+  permPublic?: boolean;
+  active?: boolean;
+}
+
+/** SQLite 的 1/0 和假库里的 true/false 都归一成布尔 */
+function toBool(v: number | boolean): boolean {
+  return v === 1 || v === true;
+}
+
+/** 摘要的形状：64 位 hex。存进去的值长得像这个就是摘要代 */
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** 口令 → SHA-256 摘要（小写 hex）。入库存这个，明文不落表 */
+export async function hashPassword(pw: string): Promise<string> {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(pw),
+  );
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * 存储形态的密码和来的人口令比对，两代都认：
+ * - 存的是摘要（64 位 hex）：把口令的摘要（调用方预算好传入）和它比；
+ * - 存的是明文（老条目）：直接逐字比。
+ * 摘要代算一次哈希要 await，所以比对本身吃现成结果，不在这里算。
+ */
+function verifyStoredPassword(
+  stored: string,
+  pw: string,
+  pwHash?: string,
+): boolean {
+  if (HEX64.test(stored)) return !!pwHash && timingSafeEqual(stored, pwHash);
+  return timingSafeEqual(pw, stored);
+}
+
+/** 把一行剥成对外回显的形状（无密码） */
+export function toGuestTypePublic(t: GuestTypeRow): GuestTypePublic {
+  const { password: _password, ...rest } = t;
+  return rest;
+}
+
+function rowToType(r: TypeRow): GuestTypeRow {
+  return {
+    id: r.id,
+    name: r.name,
+    password: r.password,
+    note: r.note,
+    permSearch: toBool(r.perm_search),
+    permDraw: toBool(r.perm_draw),
+    permMemory: toBool(r.perm_memory),
+    permNotes: toBool(r.perm_notes),
+    permFiles: toBool(r.perm_files),
+    permPublic: toBool(r.perm_public),
+    active: toBool(r.active),
+    created: r.created,
+  };
+}
+
+export function ensureGuestTypesSchema(sql: SqlTag): void {
+  sql`CREATE TABLE IF NOT EXISTS guest_types (
+       id          TEXT PRIMARY KEY,
+       name        TEXT NOT NULL,
+       password    TEXT NOT NULL,
+       note        TEXT NOT NULL DEFAULT '',
+       perm_search INTEGER NOT NULL DEFAULT 1,
+       perm_draw   INTEGER NOT NULL DEFAULT 1,
+       perm_memory INTEGER NOT NULL DEFAULT 1,
+       perm_notes  INTEGER NOT NULL DEFAULT 0,
+       perm_files  INTEGER NOT NULL DEFAULT 0,
+       perm_public INTEGER NOT NULL DEFAULT 0,
+       active      INTEGER NOT NULL DEFAULT 1,
+       created     TEXT NOT NULL
+     )`;
+  // 老库补列：长期使用者的三项专属权益是后来加的，旧表没有这三列。
+  // ADD COLUMN 遇到已存在的列会抛错 —— 一条一条试，报错就当「已经有了」。
+  // 列名没法走绑定参数（插值一律是值绑定），只能三条字面量各写各的
+  try {
+    sql`ALTER TABLE guest_types ADD COLUMN perm_notes INTEGER NOT NULL DEFAULT 0`;
+  } catch {
+    /* 已有该列 */
+  }
+  try {
+    sql`ALTER TABLE guest_types ADD COLUMN perm_files INTEGER NOT NULL DEFAULT 0`;
+  } catch {
+    /* 已有该列 */
+  }
+  try {
+    sql`ALTER TABLE guest_types ADD COLUMN perm_public INTEGER NOT NULL DEFAULT 0`;
+  } catch {
+    /* 已有该列 */
+  }
+}
+
+export function listGuestTypes(sql: SqlTag): GuestTypeRow[] {
+  ensureGuestTypesSchema(sql);
+  return sql<TypeRow>`
+    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+           perm_notes, perm_files, perm_public, active, created
+    FROM guest_types ORDER BY created`.map(rowToType);
+}
+
+/**
+ * 按 id 查档，停用（active = 0）的按查无此档算。
+ *
+ * 管权益核实的全走这条：旧票（30 天有效期）和名下旧卡不会因为管理员点了
+ * 停用就失效，这里不过滤的话，停用只挡得住新登录，收回权益的唯一手段
+ * 就只剩破坏性的删档。面板看档位走 listGuestTypes（不过滤），两不耽误。
+ */
+function typeById(sql: SqlTag, id: string): GuestTypeRow | null {
+  const rows = sql<TypeRow>`
+    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+           perm_notes, perm_files, perm_public, active, created
+    FROM guest_types WHERE id = ${id} AND active = 1`;
+  return rows.length ? rowToType(rows[0]) : null;
+}
+
+/** 按 id 查一档。查无此档返回 null。 */
+export function getGuestType(sql: SqlTag, id: string): GuestTypeRow | null {
+  ensureGuestTypesSchema(sql);
+  return typeById(sql, id);
+}
+
+/** 去掉密码的对外快照：进 state / ToolCtx / 提示词的都是这个形状 */
+export interface GuestTypeInfo {
+  id: string;
+  name: string;
+  note: string;
+  permSearch: boolean;
+  permDraw: boolean;
+  permMemory: boolean;
+  permNotes: boolean;
+  permFiles: boolean;
+  permPublic: boolean;
+}
+
+export function toGuestTypeInfo(t: GuestTypeRow): GuestTypeInfo {
+  return {
+    id: t.id,
+    name: t.name,
+    note: t.note,
+    permSearch: t.permSearch,
+    permDraw: t.permDraw,
+    permMemory: t.permMemory,
+    permNotes: t.permNotes,
+    permFiles: t.permFiles,
+    permPublic: t.permPublic,
+  };
+}
+
+/**
+ * 档位失效时的兜底快照：票里声称的那一档查不到 / 停用了 / 查询失败，
+ * 就按这一份接待 —— 六个权益全关。
+ *
+ * 权益的语义是「明确关掉才生效」，而这里必须反着来：票上的档位对不上号，
+ * 说明管理员已经收回（或我们核实不了）这一档的约定，宁可全关也不能
+ * 把「核实失败」当成「没有约定」放行 —— 那等于删一档类型就把所有来客放成全开。
+ * 名字照实说，接待说明里会写「这一档出了问题」，不至于让来客一头雾水。
+ */
+export function disabledGuestTypeInfo(id: string): GuestTypeInfo {
+  return {
+    id,
+    name: "（原类型已失效）",
+    note: "",
+    permSearch: false,
+    permDraw: false,
+    permMemory: false,
+    permNotes: false,
+    permFiles: false,
+    permPublic: false,
+  };
+}
+
+/** 密码查重：两个内置口令和表里已有的每一档都不许重 —— 重了，「分档」就分不出人 */
+async function assertPasswordFree(
+  sql: SqlTag,
+  pw: string,
+  adminPw: string,
+  gatePw: string,
+): Promise<void> {
+  if (adminPw && timingSafeEqual(pw, adminPw))
+    throw new Error("这档密码和管理员口令撞了，换一个");
+  if (gatePw && timingSafeEqual(pw, gatePw))
+    throw new Error("这档密码和前台口令撞了，换一个");
+  const pwHash = await hashPassword(pw);
+  for (const t of listGuestTypes(sql)) {
+    if (verifyStoredPassword(t.password, pw, pwHash))
+      throw new Error(`这档密码已经「${t.name}」在用，换一个`);
+  }
+}
+
+export async function createGuestType(
+  sql: SqlTag,
+  input: GuestTypeInput & { adminPw: string; gatePw: string },
+): Promise<GuestTypeRow> {
+  ensureGuestTypesSchema(sql);
+  const name = (input.name || "").trim().slice(0, 40);
+  const password = input.password || "";
+  if (!name) throw new Error("来客类型的名称不能为空");
+  if (!password) throw new Error("来客类型的密码不能为空");
+  await assertPasswordFree(sql, password, input.adminPw, input.gatePw);
+  const row: TypeRow = {
+    id: crypto.randomUUID().slice(0, 8),
+    name,
+    password: await hashPassword(password),
+    note: (input.note || "").trim().slice(0, 300),
+    perm_search: input.permSearch === false ? 0 : 1,
+    perm_draw: input.permDraw === false ? 0 : 1,
+    perm_memory: input.permMemory === false ? 0 : 1,
+    perm_notes: input.permNotes ? 1 : 0,
+    perm_files: input.permFiles ? 1 : 0,
+    perm_public: input.permPublic ? 1 : 0,
+    active: 1,
+    created: new Date().toISOString(),
+  };
+  sql`INSERT INTO guest_types (id, name, password, note, perm_search,
+            perm_draw, perm_memory, perm_notes, perm_files, perm_public,
+            active, created)
+      VALUES (${row.id}, ${row.name}, ${row.password}, ${row.note},
+              ${row.perm_search}, ${row.perm_draw}, ${row.perm_memory},
+              ${row.perm_notes}, ${row.perm_files}, ${row.perm_public},
+              ${row.active}, ${row.created})`;
+  return rowToType(row);
+}
+
+export async function updateGuestType(
+  sql: SqlTag,
+  id: string,
+  patch: GuestTypePatch & { adminPw: string; gatePw: string },
+): Promise<GuestTypeRow | null> {
+  ensureGuestTypesSchema(sql);
+  const cur = typeById(sql, id);
+  if (!cur) return null;
+  const name =
+    patch.name === undefined
+      ? cur.name
+      : String(patch.name).trim().slice(0, 40);
+  if (!name) throw new Error("来客类型的名称不能为空");
+  let password = cur.password;
+  if (patch.password !== undefined) {
+    const next = patch.password || "";
+    if (!next) throw new Error("来客类型的密码不能为空");
+    const nextHash = await hashPassword(next);
+    if (!verifyStoredPassword(cur.password, next, nextHash)) {
+      await assertPasswordFree(sql, next, patch.adminPw, patch.gatePw);
+      password = nextHash;
+    } else if (!HEX64.test(cur.password)) {
+      // 口令没换，但旧条目还是明文：顺手就地升级成摘要
+      password = nextHash;
+    }
+  }
+  const row: TypeRow = {
+    id: cur.id,
+    name,
+    password,
+    note:
+      patch.note === undefined
+        ? cur.note
+        : String(patch.note).trim().slice(0, 300),
+    perm_search:
+      patch.permSearch === undefined
+        ? cur.permSearch
+        : patch.permSearch
+          ? 1
+          : 0,
+    perm_draw:
+      patch.permDraw === undefined ? cur.permDraw : patch.permDraw ? 1 : 0,
+    perm_memory:
+      patch.permMemory === undefined
+        ? cur.permMemory
+        : patch.permMemory
+          ? 1
+          : 0,
+    perm_notes:
+      patch.permNotes === undefined ? cur.permNotes : patch.permNotes ? 1 : 0,
+    perm_files:
+      patch.permFiles === undefined ? cur.permFiles : patch.permFiles ? 1 : 0,
+    perm_public:
+      patch.permPublic === undefined
+        ? cur.permPublic
+        : patch.permPublic
+          ? 1
+          : 0,
+    active: patch.active === undefined ? cur.active : patch.active ? 1 : 0,
+    created: cur.created,
+  };
+  sql`UPDATE guest_types SET name = ${row.name}, password = ${row.password},
+        note = ${row.note}, perm_search = ${row.perm_search},
+        perm_draw = ${row.perm_draw}, perm_memory = ${row.perm_memory},
+        perm_notes = ${row.perm_notes}, perm_files = ${row.perm_files},
+        perm_public = ${row.perm_public}, active = ${row.active}
+      WHERE id = ${row.id}`;
+  return rowToType(row);
+}
+
+export function removeGuestType(sql: SqlTag, id: string): boolean {
+  ensureGuestTypesSchema(sql);
+  const rows = sql<{ id: string }>`SELECT id FROM guest_types WHERE id = ${id}`;
+  if (!rows.length) return false;
+  sql`DELETE FROM guest_types WHERE id = ${id}`;
+  return true;
+}
+
+/**
+ * 门口验密码：先比两个内置口令（那是另一条路，直接排除，不该被当成某一档），
+ * 再逐档比已启用的类型密码。命中返回那一档的完整行，没命中返回 null。
+ */
+export async function findGuestTypeByPassword(
+  sql: SqlTag,
+  pw: string,
+  adminPw: string,
+  gatePw: string,
+): Promise<GuestTypeRow | null> {
+  if (!pw) return null;
+  if (adminPw && timingSafeEqual(pw, adminPw)) return null;
+  if (gatePw && timingSafeEqual(pw, gatePw)) return null;
+  ensureGuestTypesSchema(sql);
+  const rows = sql<TypeRow>`
+    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+           perm_notes, perm_files, perm_public, active, created
+    FROM guest_types WHERE active = 1 ORDER BY created`;
+  const pwHash = await hashPassword(pw);
+  for (const r of rows) {
+    if (verifyStoredPassword(r.password, pw, pwHash)) return rowToType(r);
+  }
+  return null;
+}

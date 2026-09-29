@@ -1,0 +1,57 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // 默认使用独立示例 Worker 名；已有部署请用被忽略的本地配置，而非覆盖线上 Worker
+  "name": "ericher-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-14",
+  // agents 依赖 node:async_hooks / node:diagnostics_channel，mimetext 依赖 node:os / path
+  "compatibility_flags": ["nodejs_compat"],
+  // 前端 React 构建产物由 @cloudflare/vite-plugin 产出并作为静态资源托管
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true,
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "COWORK_AGENT",
+        "class_name": "CoworkAgent",
+      },
+    ],
+  },
+  // 类名必须保持 CoworkAgent：DO 存储按类标识派生，改名会导致既有记忆数据读不到
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CoworkAgent"],
+    },
+  ],
+  "observability": {
+    "enabled": true,
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEMORY_BUCKET",
+      // 先创建自己的桶；不同部署不要共用同一个桶
+      "bucket_name": "ericher-memory",
+    },
+  ],
+  // 每次部署自建索引；各房间的记忆归属另由 Worker / DO 层划界
+  // （首次部署前先 npx wrangler vectorize create ericher-memory-bge-m3 --dimensions 1024 --metric cosine）
+  "vectorize": [
+    {
+      "binding": "VECTORIZE_INDEX",
+      "index_name": "ericher-memory-bge-m3",
+    },
+  ],
+  "ai": {
+    "binding": "AI",
+  },
+  // Browser Run：read_url 用它把前端渲染的站跑完取 Markdown（见 src/tools/search.ts）。
+  // 免费档每天 10 个浏览器分钟；每次用了多少往 console 打一行 [browser]，wrangler tail 看。
+  "browser": {
+    "binding": "BROWSER",
+  },
+  // 额度面板若需官方校准，用 secret 单独配置 CF_ACCOUNT_ID 与 CF_API_TOKEN。
+}

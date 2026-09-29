@@ -1,0 +1,837 @@
+/* ─────────────────────────────────────────────────────────────
+   hr-desk · 消息流 —— 白纸黑字
+   ericher 的发言是素排的文字块（不装进气泡），名字用小号衬线标签；
+   我的发言是一张浅灰的圆角卡，靠右放。纸面上只留灰阶与发丝线，
+   状态色只给工具卡和出错的地方让路。
+   ───────────────────────────────────────────────────────────── */
+
+/* ── 消息列：和输入区同一条 860px 的中轴线 ── */
+.msg-list {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 4px 0 12px;
+}
+
+/* ── 单条消息 ── */
+.msg + .msg {
+  margin-top: 24px;
+}
+
+.msg-main {
+  min-width: 0;
+}
+
+/* ericher 的名字：小号衬线标签，纸面上的署名 */
+.msg-label {
+  margin-bottom: 6px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--yuzhe-ink-dim);
+}
+
+.msg-body {
+  overflow-wrap: break-word;
+}
+
+.msg-body > * + * {
+  margin-top: 8px;
+}
+
+/* 我的话：一张浅灰圆角卡，靠右放 */
+.msg.user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.msg.user .msg-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: min(78%, 620px);
+}
+
+.msg.user .msg-body {
+  padding: 10px 14px;
+  background: var(--yuzhe-bg-hover);
+  border-radius: var(--yuzhe-r-l);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+/* 标重过的消息：左边一道黑边，像页边划的重点线 */
+.msg.user[data-flag="1"] .msg-body {
+  border-left: 2px solid var(--yuzhe-black);
+}
+
+.msg.user .msg-body .text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.user .msg-foot {
+  justify-content: flex-end;
+}
+
+/* ericher 的话：不装气泡，素排的文字块 */
+.msg.assistant .msg-body {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--yuzhe-ink);
+}
+
+.msg.assistant .msg-body > * + * {
+  margin-top: 10px;
+}
+
+/* 流式光标：一枚跳动的黑笔画 */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--yuzhe-black);
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+@keyframes caret-blink {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  61%,
+  100% {
+    opacity: 0.1;
+  }
+}
+
+/* 等第一句话时的三点：占住位置，「在动」这件事不能有空白 */
+.typing {
+  display: inline-flex;
+  gap: 5px;
+  padding: 8px 0;
+}
+
+.typing span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--yuzhe-ink-faint);
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes dot-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ── Markdown 排版：纸面正文 ── */
+.md p {
+  margin: 0 0 10px;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 18px 0 8px;
+  line-height: 1.4;
+}
+
+.md h1 {
+  font-size: 20px;
+}
+
+.md h2 {
+  font-size: 17px;
+}
+
+.md h3 {
+  font-size: 15.5px;
+}
+
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 14.5px;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.md li {
+  margin: 3px 0;
+}
+
+.md li > p {
+  margin: 0;
+}
+
+.md blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--yuzhe-line);
+  color: var(--yuzhe-ink-dim);
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  margin: 14px 0;
+}
+
+.md a {
+  color: var(--yuzhe-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--yuzhe-ink-faint);
+  text-underline-offset: 3px;
+}
+
+.md a:hover {
+  color: var(--yuzhe-ink-strong);
+  text-decoration-color: var(--yuzhe-ink-strong);
+}
+
+/* 答话里带的图：纸上一张贴着的照片 */
+.md img {
+  display: block;
+  max-width: min(420px, 100%);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  cursor: zoom-in;
+}
+
+/* 行内代码与代码块 */
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--yuzhe-bg-soft);
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-s);
+  padding: 1px 5px;
+}
+
+.code-block {
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-bg-soft);
+  overflow: hidden;
+}
+
+.code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+}
+
+.code-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--yuzhe-ink-faint);
+}
+
+.code-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  cursor: pointer;
+}
+
+.code-copy-btn:hover {
+  background: var(--yuzhe-bg);
+  color: var(--yuzhe-ink);
+}
+
+.code-body {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink);
+}
+
+.code-body code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* 表格：发丝线框 */
+.md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--yuzhe-line-soft);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.md th {
+  background: var(--yuzhe-bg-soft);
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+/* ── 工具卡：白底发丝卡 + 左侧 2px 状态边 ── */
+.tool-card {
+  padding: 8px 12px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-left-width: 2px;
+  border-radius: var(--yuzhe-r-m);
+  font-size: 13px;
+}
+
+.tool-card.run,
+.tool-card.wait {
+  border-left-color: var(--yuzhe-black);
+}
+
+.tool-card.ok {
+  border-left-color: var(--yuzhe-ok);
+}
+
+.tool-card.err,
+.tool-card.warn {
+  border-left-color: var(--yuzhe-danger);
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tool-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--yuzhe-ink-faint);
+}
+
+.tool-name {
+  font-weight: 500;
+  color: var(--yuzhe-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-state {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.tool-card.run .tool-state {
+  color: var(--yuzhe-ink-dim);
+}
+
+.tool-card.ok .tool-state {
+  color: var(--yuzhe-ok);
+}
+
+.tool-card.err .tool-state,
+.tool-card.warn .tool-state {
+  color: var(--yuzhe-danger);
+}
+
+.tool-state .spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
+.tool-in,
+.tool-out {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+  word-break: break-all;
+}
+
+/* 工具画出来的图：摆出来，点开看大图 */
+.tool-img {
+  display: block;
+  max-width: min(360px, 100%);
+  margin-top: 8px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  cursor: zoom-in;
+}
+
+/* ── 思考块：12.5px 次级色 + 左发丝线 ── */
+.thinking,
+.reasoning {
+  border-left: 1px solid var(--yuzhe-line);
+  padding-left: 10px;
+  font-size: 12.5px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.thinking {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.thinking-now {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thinking-now svg {
+  flex: none;
+  color: var(--yuzhe-ink-faint);
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+}
+
+.thinking-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--yuzhe-ink-faint);
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.thinking-trail ol {
+  margin: 8px 0 2px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.thinking-trail li + li {
+  margin-top: 4px;
+}
+
+.reasoning > summary {
+  color: var(--yuzhe-ink-faint);
+}
+
+.reasoning > summary svg {
+  flex: none;
+}
+
+.reasoning p {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+}
+
+/* 可展开的行统一一枚「▸」，展开时转过九十度 */
+.msg-list details > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--yuzhe-ink-faint);
+  font-size: 12.5px;
+}
+
+.msg-list details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.msg-list details > summary::before {
+  content: "▸";
+  flex: none;
+  font-size: 10px;
+  color: var(--yuzhe-ink-faint);
+  transition: transform 0.15s;
+}
+
+.msg-list details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.msg-list details > summary:hover {
+  color: var(--yuzhe-ink-dim);
+}
+
+/* ── 附件卡：贴在消息里的一张便签 ── */
+.attach-card {
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.attach-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--yuzhe-ink-dim);
+}
+
+.attach-card-head svg {
+  flex: none;
+  color: var(--yuzhe-ink-faint);
+}
+
+.attach-card-name {
+  font-weight: 500;
+  color: var(--yuzhe-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-card-note {
+  flex: none;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.attach-card-body {
+  margin-top: 4px;
+}
+
+/* ── 交互卡片（artifact）：对话里直接能玩的一块沙箱页面 ── */
+.artifact-card {
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  overflow: hidden;
+}
+
+.artifact-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--yuzhe-line);
+  font-size: 13px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.artifact-head svg {
+  flex: none;
+  color: var(--yuzhe-ink-faint);
+}
+
+.artifact-title {
+  font-weight: 500;
+  color: var(--yuzhe-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.artifact-open {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+  text-decoration: none;
+}
+
+.artifact-open:hover {
+  color: var(--yuzhe-ink);
+}
+
+.artifact-card iframe {
+  display: block;
+  width: 100%;
+  height: 420px;
+  border: none;
+  background: var(--yuzhe-surface);
+}
+
+.attach-card-body pre {
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  background: var(--yuzhe-bg-soft);
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-s);
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--yuzhe-ink-dim);
+}
+
+/* 他带的原件：内联附图 */
+.attach-img {
+  display: block;
+  max-width: min(320px, 100%);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  cursor: zoom-in;
+}
+
+/* 回想的分割线：线以上的内容已经进了记忆库 */
+.recap-marker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+.recap-marker-line {
+  flex: 1;
+  height: 1px;
+  background: var(--yuzhe-line-soft);
+}
+
+.recap-marker-text {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 消息底部工具条 ── */
+.msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  transition: opacity 0.15s;
+}
+
+.vote {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.vote:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+.vote.has {
+  color: var(--yuzhe-ink-dim);
+}
+
+.vote.on {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink-strong);
+}
+
+.vote.on.down {
+  color: var(--yuzhe-danger);
+}
+
+.vote.on.flag {
+  color: var(--yuzhe-black);
+}
+
+/* 正在念：整枚按钮翻成黑块 */
+.vote.on.speak {
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+/* 桌面上工具条悬停才浮出；带内容的（pinned）常驻 */
+@media (hover: hover) and (min-width: 861px) {
+  .msg .msg-foot:not(.pinned) {
+    opacity: 0;
+  }
+
+  .msg:hover .msg-foot,
+  .msg:focus-within .msg-foot {
+    opacity: 1;
+  }
+}
+
+/* ── 评论区 ── */
+.cmt-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(31, 35, 41, 0.44);
+  animation: fade-in 0.15s ease-out;
+}
+
+.cmt {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 480px);
+  max-height: 80vh;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-xl);
+  box-shadow: var(--yuzhe-shadow-pop);
+  overflow: hidden;
+  animation: rise-in 0.18s ease-out;
+}
+
+.cmt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 10px 16px;
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+}
+
+.cmt-head h3 {
+  font-size: 15px;
+}
+
+.cmt-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 16px 12px;
+}
+
+.cmt-item {
+  padding: 10px 0;
+}
+
+.cmt-item + .cmt-item {
+  border-top: 1px solid var(--yuzhe-line-soft);
+}
+
+.cmt-who {
+  margin-bottom: 3px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.cmt-item p {
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.empty-sm {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.err {
+  font-size: 12px;
+  color: var(--yuzhe-danger);
+}
+
+.cmt-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--yuzhe-line-soft);
+}
+
+.cmt-form .field {
+  flex: 1;
+}
+
+/* 空会话占位：只留两行字 */
+.empty .meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 手机断点：操作常显（触屏没有 hover），内边距收紧 ── */
+@media (max-width: 860px) {
+  .msg + .msg {
+    margin-top: 18px;
+  }
+
+  .msg.user .msg-main {
+    max-width: 88%;
+  }
+
+  .msg.user .msg-body {
+    padding: 8px 12px;
+  }
+
+  .msg.assistant .msg-body {
+    font-size: 14.5px;
+  }
+}

@@ -1,0 +1,98 @@
+/* 看图层：遮罩是功能性的暗，为了把图从纸面上托出来，不算暗色残留。 */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  /* 盖过弹层（sheet 100），让路给通知条（notice 160） */
+  z-index: 150;
+  background: rgba(31, 35, 41, 0.72);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* 顶部给工具条留出位置，别让图压在它底下 */
+  padding: 64px 16px 24px;
+  animation: fade-in 0.15s ease-out;
+}
+
+/* 工具条：白底黑字，浮在遮罩上方的一道纸条 */
+.lightbox-bar {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(92vw, 640px);
+  padding: 4px 6px 4px 12px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow-pop);
+}
+
+.lightbox-name {
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--yuzhe-ink);
+}
+
+/* 下载/新窗口是 <a>，关掉是 <button>，同一张脸 */
+.lightbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.lightbox-btn:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
+/* 透明 PNG 也落在一张白纸上，别让遮罩透出来 */
+.lightbox-img {
+  display: block;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: var(--yuzhe-surface);
+  border-radius: var(--yuzhe-r-m);
+  box-shadow: var(--yuzhe-shadow-pop);
+  animation: rise-in 0.18s ease-out;
+}
+
+/* 没取回来时的说明卡：地址可能很长，得能断行 */
+.lightbox-miss {
+  max-width: min(86vw, 560px);
+  padding: 14px 18px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-l);
+  box-shadow: var(--yuzhe-shadow-pop);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--yuzhe-ink-dim);
+  word-break: break-all;
+}
+
+@media (max-width: 860px) {
+  /* 窄屏上给三个按钮留够地方，名字让路 */
+  .lightbox-name {
+    max-width: 46vw;
+  }
+}

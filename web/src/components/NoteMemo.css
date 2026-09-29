@@ -1,0 +1,866 @@
+/* ─────────────────────────────────────────────────────────────
+   NoteMemo.css · 笔记本（NotePage/NoteDrawer）+ 回想
+   （SessionMemoryPage/SessionMemoryDrawer）共用样式。
+
+   白纸黑字：只用 theme.css 的 --yuzhe-* 灰阶变量、发丝线和黑色块，
+   不引入任何彩色与装饰。类名统一用 nm- 前缀（note/memo），
+   避免和别的组件文件里的同名类互相串味。
+
+   两个抽屉常年挂在 DOM 上（开合动画与输入状态都要它），
+   所以「合上」不是卸载，而是 transform 收进画外 + visibility 藏起来。
+   ───────────────────────────────────────────────────────────── */
+
+/* ── 通用小件：搜索框 ── */
+.nm-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-faint);
+  transition: border-color 0.15s;
+}
+
+.nm-search:focus-within {
+  border-color: var(--yuzhe-line-strong);
+}
+
+.nm-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+}
+
+.nm-search input::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nm-search-clear:hover {
+  color: var(--yuzhe-ink);
+  background: var(--yuzhe-bg-hover);
+}
+
+/* ── 通用小件：空态 / 错误行 / 栏底注脚 ── */
+.nm-empty {
+  padding: 14px 10px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-err {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--yuzhe-danger);
+}
+
+.nm-foot {
+  flex: none;
+  padding: 10px 14px;
+  border-top: 1px solid var(--yuzhe-line-soft);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 语气/删除这一类带语义的 chip：形状用共享原语，色彩只留功能红 */
+.chip.danger {
+  color: var(--yuzhe-danger);
+}
+
+.chip.danger:hover {
+  border-color: rgba(201, 54, 44, 0.35);
+  background: rgba(201, 54, 44, 0.08);
+  color: var(--yuzhe-danger);
+}
+
+/* ── 顶层页面骨架：顶栏（衬线标题 + 返回）+ 两栏 ── */
+.nm-page {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--yuzhe-bg);
+}
+
+.nm-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--yuzhe-line);
+  background: var(--yuzhe-surface);
+}
+
+.nm-top-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+
+.nm-cols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* 左列：列表用次级底色垫一层，和右边的白纸分开 */
+.nm-side {
+  flex: none;
+  width: 240px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--yuzhe-bg-soft);
+  border-right: 1px solid var(--yuzhe-line);
+}
+
+.nm-side .nm-search {
+  flex: none;
+  margin: 12px 12px 8px;
+}
+
+.nm-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* ── 左列列表行（笔记两处共用：页与抽屉）── */
+.nm-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px 12px;
+}
+
+.nm-note {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.nm-note:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+/* 选中：白底 + 左缘一道黑着重线 —— 像纸边的一笔，不用彩色高亮 */
+.nm-note.on {
+  background: var(--yuzhe-surface);
+  box-shadow: inset 2px 0 0 var(--yuzhe-black);
+}
+
+.nm-note-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-note-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.nm-note-preview {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.nm-note-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-note-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.nm-note-tag {
+  padding: 2px 6px;
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--yuzhe-ink-dim);
+}
+
+/* ── 笔记本：右栏编辑区 ── */
+.nm-blank {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  font-size: 14px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* min-height:100% 让短文也占满一屏；内容长过一屏时随 main 滚 */
+.nm-editor {
+  flex: 1 0 auto;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 22px 22px;
+}
+
+/* 标题输入用衬线：写的是一篇东西的名字，不是一条表单 */
+.nm-title-input {
+  width: 100%;
+  flex: none;
+  padding: 12px 0 4px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.nm-title-input::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+}
+
+.nm-head .nm-save {
+  margin-right: auto;
+}
+
+.nm-save {
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-save.dirty {
+  color: var(--yuzhe-ink-strong);
+}
+
+.nm-tag-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-tag-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--yuzhe-ink);
+}
+
+.nm-tag-input::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 正文区：写的时候占满余下高度（内部自己滚）；预览时随内容长高交给页面滚 */
+.nm-body-wrap {
+  flex: 1 0 auto;
+  min-height: 200px;
+  display: flex;
+  padding: 10px 0 4px;
+}
+
+.nm-body {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--yuzhe-ink);
+}
+
+.nm-body::placeholder {
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 笔记本：修订历史 ── */
+.nm-revs {
+  flex: none;
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: var(--yuzhe-bg-soft);
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-l);
+}
+
+.nm-revs-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.nm-revs-head b {
+  font-size: 14px;
+  color: var(--yuzhe-ink-strong);
+}
+
+.nm-revs-head span {
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-revs .nm-empty {
+  padding: 10px 0 2px;
+}
+
+.nm-rev {
+  padding: 12px 0 10px;
+}
+
+.nm-rev + .nm-rev {
+  border-top: 1px solid var(--yuzhe-line-soft);
+}
+
+.nm-rev-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-rev-meta b {
+  font-size: 13px;
+  color: var(--yuzhe-ink-strong);
+}
+
+.nm-rev-peek {
+  margin: 4px 0 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--yuzhe-ink-dim);
+}
+/* ── Markdown 正文（预览）：只在笔记预览这一处生效，不占全局 .md 名字 ── */
+.note-preview-body {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--yuzhe-ink);
+}
+
+.note-preview-body > *:first-child {
+  margin-top: 0;
+}
+
+.note-preview-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.note-preview-body p {
+  margin: 0 0 0.9em;
+}
+
+.note-preview-body h1,
+.note-preview-body h2,
+.note-preview-body h3,
+.note-preview-body h4,
+.note-preview-body h5,
+.note-preview-body h6 {
+  margin: 1.3em 0 0.5em;
+  line-height: 1.4;
+}
+
+.note-preview-body h1 {
+  font-size: 1.4em;
+}
+
+.note-preview-body h2 {
+  font-size: 1.22em;
+}
+
+.note-preview-body h3 {
+  font-size: 1.08em;
+}
+
+.note-preview-body ul,
+.note-preview-body ol {
+  margin: 0 0 0.9em;
+  padding-left: 1.5em;
+}
+
+.note-preview-body li {
+  margin: 0.15em 0;
+}
+
+.note-preview-body code {
+  padding: 1px 5px;
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-bg-soft);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.note-preview-body pre {
+  margin: 0 0 0.9em;
+  padding: 10px 12px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  background: var(--yuzhe-bg-soft);
+  overflow-x: auto;
+}
+
+.note-preview-body pre code {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.note-preview-body blockquote {
+  margin: 0 0 0.9em;
+  padding: 2px 12px;
+  border-left: 3px solid var(--yuzhe-line-strong);
+  color: var(--yuzhe-ink-dim);
+}
+
+.note-preview-body table {
+  margin: 0 0 0.9em;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.note-preview-body th,
+.note-preview-body td {
+  padding: 4px 10px;
+  border: 1px solid var(--yuzhe-line);
+}
+
+.note-preview-body th {
+  background: var(--yuzhe-bg-soft);
+  font-weight: 600;
+}
+
+.note-preview-body hr {
+  margin: 1.2em 0;
+  border: none;
+  border-top: 1px solid var(--yuzhe-line-soft);
+}
+
+.note-preview-body a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.note-preview-body img {
+  border-radius: var(--yuzhe-r-m);
+}
+
+/* ── 左侧抽屉（笔记本 / 回想共用）──
+   合着时收进画外并藏起来；拉开只推 transform，动画从合上那格算起。
+   挂载动画关掉 —— 它只在进页面时白白播一遍。 */
+.note-drawer.drawer-left,
+.memo-drawer.drawer-left {
+  animation: none;
+  transform: translateX(-102%);
+  visibility: hidden;
+  transition:
+    transform 0.2s ease-out,
+    visibility 0s linear 0.2s;
+}
+
+.note-drawer.drawer-left.open,
+.memo-drawer.drawer-left.open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 0.2s ease-out;
+}
+
+.nm-drawer-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--yuzhe-line);
+}
+
+.nm-drawer-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+}
+
+.nm-hint {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--yuzhe-ink-dim);
+  background: var(--yuzhe-bg-soft);
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+}
+
+.nm-hint svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+/* 抽屉里的编辑区：固定在抽屉高度内，正文/预览各自内部滚 */
+.nm-drawer-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 14px;
+}
+
+.nm-drawer-editor-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.nm-drawer-editor .nm-title-input {
+  padding: 6px 0 2px;
+  font-size: 17px;
+}
+
+.nm-drawer-editor .nm-body-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 8px 0 0;
+  overflow-y: auto;
+}
+
+.note-drawer > .nm-search {
+  flex: none;
+  margin: 12px 14px 8px;
+}
+
+.note-drawer .nm-err,
+.memo-drawer .nm-err {
+  flex: none;
+  margin: 8px 14px 12px;
+}
+
+/* ── 回想：左列会话分组 ── */
+.nm-groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+
+.nm-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--yuzhe-r-m);
+  background: transparent;
+  color: var(--yuzhe-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.nm-group:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.nm-group.on {
+  background: var(--yuzhe-surface);
+  box-shadow: inset 2px 0 0 var(--yuzhe-black);
+}
+
+.nm-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* 条数是一枚小方章：选中那场换成黑底白字，一眼看到记了几条 */
+.nm-group-n {
+  flex: none;
+  min-width: 22px;
+  padding: 1px 5px;
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-group.on .nm-group-n {
+  border-color: var(--yuzhe-black);
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+/* ── 回想：右栏 ── */
+.nm-memo-main {
+  padding: 14px 20px 26px;
+}
+
+.nm-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nm-memo-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+}
+
+/* recapNow 的回话：黑边在左的一道批注，和提问卡同一个母题 */
+.nm-said {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: var(--yuzhe-bg-soft);
+  border-left: 3px solid var(--yuzhe-black);
+  border-radius: 0 var(--yuzhe-r-m) var(--yuzhe-r-m) 0;
+  font-size: 13px;
+  color: var(--yuzhe-ink);
+}
+
+.nm-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+/* ── 回想：一张卡片（.card 打底，这里只管里面的排布）── */
+.nm-card {
+  padding: 13px 16px;
+}
+
+.nm-card-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nm-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-senti {
+  height: 22px;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: var(--yuzhe-bg-soft);
+  color: var(--yuzhe-ink-dim);
+}
+
+/* 低沉的那几档把边线压深一档 —— 全程灰阶，深浅就是语气 */
+.nm-senti.s-low,
+.nm-senti.s-tense,
+.nm-senti.s-tired {
+  border-color: var(--yuzhe-line-strong);
+}
+
+.nm-from {
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.nm-card-body {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  color: var(--yuzhe-ink);
+}
+
+.nm-intent {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-bg-soft);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--yuzhe-ink-dim);
+}
+
+.nm-intent-mark {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 5px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* ── 回想抽屉：筛选条与卡片流都贴边排 ── */
+.memo-drawer .nm-filters {
+  flex: none;
+  padding: 12px 14px 0;
+}
+
+.memo-drawer .nm-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px 14px;
+}
+
+/* ── 窄屏：两栏堆成一列，整页一起滚 ── */
+@media (max-width: 860px) {
+  .nm-cols {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .nm-side {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--yuzhe-line);
+  }
+
+  /* 左列限高：列表太长会把右栏内容顶出首屏 */
+  .nm-list,
+  .nm-groups {
+    flex: none;
+    max-height: 44vh;
+    padding-bottom: 8px;
+  }
+
+  .nm-main {
+    overflow: visible;
+  }
+
+  .nm-editor {
+    min-height: 0;
+    padding: 2px 14px 18px;
+  }
+
+  .nm-title-input {
+    font-size: 19px;
+  }
+
+  .nm-body-wrap {
+    min-height: 46vh;
+  }
+
+  .nm-memo-main {
+    padding: 12px 12px 24px;
+  }
+
+  .nm-top {
+    padding: 8px 10px;
+  }
+
+  .nm-top-title {
+    font-size: 16px;
+  }
+}

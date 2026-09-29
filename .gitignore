@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.dev.vars
+.wrangler.local.jsonc
+.wrangler/
+.tsbuild/
+*.log
+*.tsbuildinfo
+worker-configuration.d.ts
+.DS_Store
+.trae/

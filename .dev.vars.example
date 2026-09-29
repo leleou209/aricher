@@ -1,0 +1,59 @@
+# 复制为 .dev.vars 并填入你的第三方 API 信息（本地开发用）。
+# 生产环境用 npx wrangler secret put 逐项配置，两边名字一致。
+# 标「可选」的没配时功能自动降级或关闭，不影响启动。
+
+# ── 主模型（必填）──────────────────────────────
+# 任意 Anthropic / OpenAI 兼容端点。管理面板「模型配置」也可运行时增删，
+# 那里配了生效条目就走面板配置；都没配时回落到这里的旧链。
+API_ENDPOINT=https://your-api-provider.com
+API_KEY=YOUR_API_KEY
+API_MODEL=your-model-name
+
+# ── 门禁（必填）──────────────────────────────
+# 没有内置默认值：一条都不设时登录页直接回 503「门禁未配置」。
+# 本地也照样要填 —— 别用示例值，把它当成真的口令。
+GATE_PASSWORD=换成你自己的来客口令
+ADMIN_PASSWORD=换成你自己的管理员口令
+# 强烈建议设置独立随机的会话签名密钥；不设只回退到 ADMIN_PASSWORD，绝不使用来客口令。
+# 仅配 GATE_PASSWORD 不能签发会话票；管理员与来客口令必须不同。
+# SESSION_SECRET=换成独立的随机长字符串
+
+# ── 模型配置面板用（可选）──────────────────────
+# 「模型配置」条目里的 key 不落库，只存 secret 变量名，运行时从这里取值。
+# 每加一个厂商就配一个自己的变量名（名字随你起，面板里填这个名字）。
+# DEEPSEEK_KEY=sk-...
+# OPENAI_KEY=sk-...
+
+# ── 网络搜索（可选）──────────────────────────
+# Tavily（https://tavily.com）；不配则 search 退到 DuckDuckGo 免费渠道并明确标注来源
+# TAVILY_API_KEY=tvly-your-key
+
+# ── 语音合成（可选，多协议，顺序即优先级）────────
+# 智谱：视觉理解 + GLM-TTS 共用这一把
+# ZHIPU_KEY=your-zhipu-key
+# 小米 MiMo（platform.xiaomimimo.com）：朗读 + 会话标题
+# MIMO_API_KEY=your-mimo-key
+# MiMo 接口地址覆盖：只有 key 来自第三方转发站时才需要填
+# MIMO_TTS_URL=https://api.xiaomimimo.com/v1/chat/completions
+# MIMO_API_BASE=https://api.xiaomimimo.com/anthropic
+# 会话标题模型（默认 mimo-v2.5-pro）
+# MIMO_TITLE_MODEL=mimo-v2.5-pro
+# 豆包 Seed-TTS 2.0（火山引擎，控制台 > API Key 管理）
+# DOUBAO_TTS_KEY=your-doubao-tts-key
+# 豆包音色覆盖（控制台 > 音色库 里的 speaker id）
+# DOUBAO_TTS_SPEAKER=zh_female_shuangkuaisisi_uranus_bigtts
+
+# ── 绘画（可选）──────────────────────────────
+# 硅基流动 Z-Image-Turbo（高质量档）；不配则逐级降档到 Workers AI / 智谱
+# SILICONFLOW_API_KEY=sk-...
+
+# ── 维护模型（可选）──────────────────────────
+# 会话标题、回想整理、思考文本等小调用用的独立 key；
+# 不配则复用主模型的 API_KEY
+# SK_MAINTENANCE=your-maintenance-key
+
+# ── 官方用量校准（可选）───────────────────────
+# 额度面板用官方 API 核准真实用量；不配则用自计量口径并在面板标注。
+# 不要把自己的账号 ID 或 token 写进公开的 wrangler.jsonc
+# CF_API_TOKEN=一个只有 Analytics:Read 权限的 token
+# CF_ACCOUNT_ID=你的账户 ID（生产环境用 secret put）
