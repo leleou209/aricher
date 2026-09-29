@@ -419,9 +419,9 @@ describe("textOverlap（措辞像不像）", () => {
   });
 
   it("说的是两件不相干的事 → 低", () => {
-    expect(textOverlap("管理员在一家小公司工作", "示例项目是长期项目")).toBeLessThan(
-      0.2,
-    );
+    expect(
+      textOverlap("管理员在一家小公司工作", "示例项目是长期项目"),
+    ).toBeLessThan(0.2);
   });
 
   it("标点和空格不影响判断", () => {

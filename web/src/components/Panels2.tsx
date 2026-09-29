@@ -986,7 +986,7 @@ export function VisitorsPanel() {
   const [events, setEvents] = useState<VisitorEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsErr, setEventsErr] = useState("");
-  /** 持卡人名册 + 档位名映射：卡是长期身份，和「每一次进门」的名册分开摆 */
+  /** 卡与档位名映射：卡按 room 拼进名册行 —— 同一个人只出现一行，持卡以标签呈现 */
   const [cards, setCards] = useState<UserCard[]>([]);
   const [typeNames, setTypeNames] = useState<Record<string, string>>({});
 
@@ -1031,63 +1031,111 @@ export function VisitorsPanel() {
     }
   };
 
+  // 拼合：卡都绑着房间（领卡那一刻所在的那间），按 room 对上名册行，
+  // 同一个人只出现一次，持卡以档位标签呈现。万一房间先没了卡还在（理论边界），
+  // 也单独摆出来 —— 管理员视角少一行人比多一行更糟。
+  const roomIds = new Set(rooms.map((r) => r.room));
+  const orphanCards = cards.filter((c) => !roomIds.has(c.room));
+
   return (
     <div className="panel-body">
-      <h3 className="sect">来客名册（{rooms.length}）</h3>
+      <h3 className="sect">
+        来客名册（{rooms.length}
+        {!!cards.length && ` · 持卡 ${cards.length}`}）
+      </h3>
 
       <ul className="remind-list">
-        {rooms.map((r) => (
-          <li className="remind-row" key={r.room}>
-            <button
-              className="link"
-              onClick={() => void open(r.room)}
-              title="点开看这位来客的留痕明细"
-            >
-              <Icon
-                name={openRoom === r.room ? "chevron-down" : "chevron-right"}
-                size={13}
-              />{" "}
-              {r.nickname || "没留称呼"}
-            </button>
+        {rooms.map((r) => {
+          const card = cards.find((c) => c.room === r.room);
+          return (
+            <li className="remind-row" key={r.room}>
+              <div className="remind-when">
+                <button
+                  className="link"
+                  onClick={() => void open(r.room)}
+                  title="点开看这位来客的留痕明细"
+                >
+                  <Icon
+                    name={
+                      openRoom === r.room ? "chevron-down" : "chevron-right"
+                    }
+                    size={13}
+                  />{" "}
+                  {r.nickname || "没留称呼"}
+                </button>
+                {card && (
+                  <span
+                    className="tag ghost"
+                    title="领过身份卡：凭「昵称 + 密码」随时回到这间屋"
+                  >
+                    {card.typeId === "common"
+                      ? "通用档"
+                      : typeNames[card.typeId] || card.typeId}
+                  </span>
+                )}
+              </div>
+              <div className="remind-when">
+                <Icon name="user" size={15} />
+                <span className="meta">{r.room}</span>
+              </div>
+              {card?.purpose && <p className="remind-what">{card.purpose}</p>}
+              <div className="remind-foot">
+                <span className="meta">
+                  首次 {fmtWhen(r.firstSeen)} · 最近 {fmtWhen(r.lastSeen)}
+                  {card &&
+                    ` · ${card.email ? `邮箱 ${card.email}` : "没留邮箱"}`}
+                </span>
+              </div>
+
+              {openRoom === r.room && (
+                <div className="panel-body">
+                  {eventsLoading && <p className="empty-sm">读取中…</p>}
+                  {eventsErr && <p className="err">{eventsErr}</p>}
+                  {!eventsLoading && !eventsErr && !events.length && (
+                    <p className="empty-sm">这位来客还没有留痕。</p>
+                  )}
+                  {!!events.length && (
+                    <ul className="remind-list">
+                      {events.map((ev) => (
+                        <li className="remind-row" key={ev.id}>
+                          <div className="remind-when">
+                            <span className="tag">
+                              {VISITOR_KIND[ev.kind] || ev.kind}
+                            </span>
+                            <span className="meta">{fmtWhen(ev.ts)}</span>
+                            {ev.nickname && (
+                              <span className="tag ghost">{ev.nickname}</span>
+                            )}
+                          </div>
+                          {ev.detail && (
+                            <p className="remind-what">{ev.detail}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+        {orphanCards.map((c) => (
+          <li className="remind-row" key={c.id}>
             <div className="remind-when">
-              <Icon name="user" size={15} />
-              <span className="meta">{r.room}</span>
+              <strong>{c.name}</strong>
+              <span className="tag ghost">
+                {c.typeId === "common"
+                  ? "通用档"
+                  : typeNames[c.typeId] || c.typeId}
+              </span>
+              <span className="meta">绑定的房间已不在名册</span>
             </div>
             <div className="remind-foot">
               <span className="meta">
-                首次 {fmtWhen(r.firstSeen)} · 最近 {fmtWhen(r.lastSeen)}
+                {c.email ? `邮箱 ${c.email}` : "没留邮箱"} · 最近活跃{" "}
+                {fmtWhen(c.lastSeen)}
               </span>
             </div>
-
-            {openRoom === r.room && (
-              <div className="panel-body">
-                {eventsLoading && <p className="empty-sm">读取中…</p>}
-                {eventsErr && <p className="err">{eventsErr}</p>}
-                {!eventsLoading && !eventsErr && !events.length && (
-                  <p className="empty-sm">这位来客还没有留痕。</p>
-                )}
-                {!!events.length && (
-                  <ul className="remind-list">
-                    {events.map((ev) => (
-                      <li className="remind-row" key={ev.id}>
-                        <div className="remind-when">
-                          <span className="tag">
-                            {VISITOR_KIND[ev.kind] || ev.kind}
-                          </span>
-                          <span className="meta">{fmtWhen(ev.ts)}</span>
-                          {ev.nickname && (
-                            <span className="tag ghost">{ev.nickname}</span>
-                          )}
-                        </div>
-                        {ev.detail && (
-                          <p className="remind-what">{ev.detail}</p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
           </li>
         ))}
       </ul>
@@ -1099,40 +1147,8 @@ export function VisitorsPanel() {
 
       <p className="meta pad">
         留痕是介绍页里当面说明过的：来客说过什么、动过哪些面板，一笔一笔记在他自己那间屋里。
-        客人问起「记了我什么」，把这一页摊给他看就行。
-      </p>
-
-      <h3 className="sect">持卡人（{cards.length}）</h3>
-      {!!cards.length && (
-        <ul className="remind-list">
-          {cards.map((c) => (
-            <li className="remind-row" key={c.id}>
-              <div className="remind-when">
-                <strong>{c.name}</strong>
-                <span className="tag ghost">
-                  {c.typeId === "common"
-                    ? "通用档"
-                    : typeNames[c.typeId] || c.typeId}
-                </span>
-              </div>
-              {c.purpose && <p className="remind-what">{c.purpose}</p>}
-              <div className="remind-foot">
-                <span className="meta">
-                  {c.email ? `邮箱 ${c.email}` : "没留邮箱"} · 最近活跃{" "}
-                  {fmtWhen(c.lastSeen)}
-                </span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {!cards.length && (
-        <p className="empty-sm">
-          还没有人领卡。来客升级成长期身份后，会出现在这里。
-        </p>
-      )}
-      <p className="meta pad">
-        卡是长期身份：领卡那一刻所在的屋子跟着卡走，凭「昵称 + 密码」随时回来。
+        客人问起「记了我什么」，把这一页摊给他看就行。行首带档位标签的是持卡来客：
+        卡是长期身份，领卡那一刻所在的屋子跟着卡走，凭「昵称 + 密码」随时回来。
         邮箱只登记不发送 —— 这台机器没有邮件通道，这里是人工联系用的底账。
       </p>
       {err && <p className="err">{err}</p>}

@@ -50,7 +50,7 @@ if (candidates.length !== 1) {
 }
 const { file, config } = candidates[0];
 if (
-  !useLocal &&
+  !usePrivate &&
   (config.name !== "ericher-app" ||
     config.routes?.length ||
     config.vars?.CF_ACCOUNT_ID)
