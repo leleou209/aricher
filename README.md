@@ -82,13 +82,13 @@ npm run dev
 
 ```powershell
 $env:HR_DESK_WRANGLER_CONFIG = ".wrangler.local.jsonc"
-npm run deploy -- --local --dry-run
+npm run deploy -- --private --dry-run
 # 核对 dry-run 结果后，如确实要更新已有部署，再单独执行：
-# npm run deploy -- --local
+# npm run deploy -- --private
 Remove-Item Env:HR_DESK_WRANGLER_CONFIG
 ```
 
-私有部署需要环境变量与 `--local` 同时存在；脚本会核对本次构建的配置路径，拒绝使用旧的构建产物。不要把 `.wrangler.local.jsonc` 上传到 GitHub。
+私有部署需要环境变量与 `--private` 同时存在；脚本会核对本次构建的配置路径，拒绝使用旧的构建产物。不要把 `.wrangler.local.jsonc` 上传到 GitHub。
 
 ## 质量与测试
 

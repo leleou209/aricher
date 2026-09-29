@@ -273,7 +273,11 @@ describe("新建与改写", () => {
   it("我动笔的那次，笔迹记成我 —— 列表里要能看出是她改的", () => {
     const { sql } = makeDb();
     const n = saveNote(sql, { title: "存一下", body: "原话", by: "user" });
-    const after = saveNote(sql, { id: n.id, body: "我整理过的", by: "assistant" });
+    const after = saveNote(sql, {
+      id: n.id,
+      body: "我整理过的",
+      by: "assistant",
+    });
     expect(after.author).toBe("user");
     expect(after.updatedBy).toBe("assistant");
   });

@@ -1470,11 +1470,14 @@ async function handleApi(
   // tag 公开门槛：一次拿到「开着哪几道门」+「每个 tag 各量级多少条」。
   // 面板上决定开不开门，这两样要一起看 —— 只看门槛不看分布，等于闭着门拉闸。
   if (p === "/api/memory/tags" && m === "GET")
+    // 两个 RPC 调用必须先等齐再装包：stub 方法返回的是 Promise，
+    // 直接塞进对象字面量会被 JSON 序列化成 {} —— 前端拿到 gates:{}，
+    // 渲染第一行带 tag 的记忆就崩。POST 那条没这毛病（整个 Promise
+    // 被 readState 等掉了），GET 是唯一把两个调用拼在一处的地方
     return readState(
-      Promise.resolve({
-        gates: agent.listTagGates(),
-        stats: agent.memoryTagStats(),
-      }),
+      Promise.all([agent.listTagGates(), agent.memoryTagStats()]).then(
+        ([gates, stats]) => ({ gates, stats }),
+      ),
     );
   if (p === "/api/memory/tags" && m === "POST") {
     try {

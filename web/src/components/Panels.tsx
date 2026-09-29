@@ -316,7 +316,8 @@ export function MemoryPanel() {
   }, [tagData]);
 
   const gateLevelOf = (tag: string) =>
-    tagData?.gates.find((g) => g.tag === tag)?.maxLevel || "";
+    // gates 也兜一层：账本没回来齐就先当没开门，别让整块设置跟着塌
+    tagData?.gates?.find((g) => g.tag === tag)?.maxLevel || "";
 
   const setGate = async (tag: string, maxLevel: string) => {
     // 先就地改：门开了没反应，会让人以为没开上 —— 失败时下面的请求会把真账拉回来
