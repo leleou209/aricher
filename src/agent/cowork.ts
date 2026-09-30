@@ -175,6 +175,7 @@ import {
 } from "./publicPosts";
 import {
   ensureVisitorSchema,
+  isNewJoin,
   listVisitorEvents,
   listVisitorRooms,
   logVisitorEventBatch,
@@ -880,7 +881,9 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     // 来客进门留痕，顺手到主人那间报个到（名册，见 visitor.ts）。
     // 报不上名（主间没醒）不影响接待，下一回进门再报。
     if (!this.isOwnerRoom) {
-      this.logVisitor("join", "role=user");
+      // 进门去重：间隔内的 WS 重连是断线不是进门（见 isNewJoin）。
+      // last_seen 照刷——每次连接都该刷新的是名册那个心跳，不是留痕账本。
+      if (isNewJoin(this.db, this.name)) this.logVisitor("join", "role=user");
       void this.registerToOwner().catch(() => {});
     }
 

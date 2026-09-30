@@ -163,6 +163,31 @@ export function listVisitorEvents(
     .slice(0, limit);
 }
 
+/**
+ * 两次「进门」之间至少隔这么久：间隔内的重连是断线，不是进门。
+ * CF 代理的空闲 WebSocket 隔一阵就被掐，前端自动重连——不设这道闸，
+ * 一个开着页面发呆的人每两三分钟就被记一次「进门」，账本全是噪音。
+ */
+export const JOIN_DEDUPE_MS = 30 * 60 * 1000;
+
+/**
+ * 这笔进门该不该记。join 全在轮外单笔直落（散行），查上一笔很便宜。
+ * 真正的「心跳」住在名册的 last_seen 里——每次连接都该刷的是那个，
+ * 留痕账本只认「隔了一段时间的重新出现」。
+ */
+export function isNewJoin(
+  sql: SqlTag,
+  room: string,
+  now = Date.now(),
+): boolean {
+  const rows = sql<{ ts: string }>`
+    SELECT ts FROM visitor_events WHERE room = ${room} AND kind = 'join'
+    ORDER BY ts DESC LIMIT 1`;
+  const last = rows[0]?.ts;
+  if (!last) return true;
+  return now - Date.parse(last) >= JOIN_DEDUPE_MS;
+}
+
 /** 来客名册：报过新称呼就更新，每次报到顺手刷新 last_seen。 */
 export function registerVisitorRoom(
   sql: SqlTag,

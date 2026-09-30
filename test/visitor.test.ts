@@ -19,6 +19,8 @@ import {
   listVisitorEvents,
   registerVisitorRoom,
   listVisitorRooms,
+  isNewJoin,
+  JOIN_DEDUPE_MS,
   VISITOR_BATCH_KIND,
   type VisitorEvent,
 } from "../src/agent/visitor";
@@ -79,6 +81,16 @@ function fakeDb(clock: { now: string }) {
         .filter((e) => e.room === room)
         .sort((a, b) => (a.ts < b.ts ? 1 : -1))
         .slice(0, limit) as T[];
+    }
+
+    // isNewJoin 的查询：最近一笔「进门」。kind 是 SQL 字面量不在参数里，
+    // values 只有 (room, limit) —— 认文本里的 'join' 就行。
+    if (sql.startsWith("select ts from visitor_events")) {
+      const [room] = values as [string];
+      const hit = events
+        .filter((e) => e.room === room && e.kind === "join")
+        .sort((a, b) => (a.ts < b.ts ? 1 : -1))[0];
+      return (hit ? [{ ts: hit.ts }] : []) as T[];
     }
 
     if (sql.startsWith("insert into visitor_rooms")) {
@@ -291,5 +303,57 @@ describe("visitor_events 块状存储", () => {
     const { db } = fakeDb(clock);
     logVisitorEventBatch(db, []);
     expect(listVisitorEvents(db, "guest-aabb", 500)).toHaveLength(0);
+  });
+});
+
+/**
+ * 进门去重：CF 代理的空闲 WS 隔一阵被掐、前端自动重连，
+ * 不设闸的话一个开着页面发呆的人每两三分钟就「进一次门」。
+ * 进门 = 隔了一段时间的重新出现；间隔内的重连是断线，不是进门。
+ */
+describe("进门去重", () => {
+  const t0 = "2026-01-01T00:00:00.000Z";
+
+  it("从没记过进门 → 记（第一次来总得记账）", () => {
+    const { db } = fakeDb({ now: t0 });
+    expect(isNewJoin(db, "guest-aabb", Date.parse(t0))).toBe(true);
+  });
+
+  it("上一笔进门在间隔内 → 不记，那是一次断线重连", () => {
+    const clock = { now: t0 };
+    const { db } = fakeDb(clock);
+    logVisitorEvent(db, "guest-aabb", "小张", "join", "role=user");
+    const t = Date.parse(t0) + 10 * 60 * 1000;
+    expect(isNewJoin(db, "guest-aabb", t)).toBe(false);
+  });
+
+  it("正好卡在阈值上 → 记（新进门的判定从间隔满那一刻起）", () => {
+    const clock = { now: t0 };
+    const { db } = fakeDb(clock);
+    logVisitorEvent(db, "guest-aabb", "小张", "join", "role=user");
+    expect(isNewJoin(db, "guest-aabb", Date.parse(t0) + JOIN_DEDUPE_MS)).toBe(
+      true,
+    );
+  });
+
+  it("中间隔着留言和面板也不影响：认的是上一笔「进门」，不是上一笔事件", () => {
+    const clock = { now: t0 };
+    const { db } = fakeDb(clock);
+    logVisitorEvent(db, "guest-aabb", "小张", "join", "role=user");
+    clock.now = "2026-01-01T00:05:00.000Z";
+    logVisitorEvent(db, "guest-aabb", "小张", "message", "在吗");
+    clock.now = "2026-01-01T00:08:00.000Z";
+    logVisitorEvent(db, "guest-aabb", "小张", "panel", "翻面板");
+    // 上一笔事件是 3 分钟前的面板，但上一笔进门是 8 分钟前 —— 还在间隔内，不记
+    expect(
+      isNewJoin(db, "guest-aabb", Date.parse("2026-01-01T00:08:00.000Z")),
+    ).toBe(false);
+  });
+
+  it("别家的进门不算数：去重按房间隔离", () => {
+    const clock = { now: t0 };
+    const { db } = fakeDb(clock);
+    logVisitorEvent(db, "guest-ccdd", "小李", "join", "role=user");
+    expect(isNewJoin(db, "guest-aabb", Date.parse(t0))).toBe(true);
   });
 });
