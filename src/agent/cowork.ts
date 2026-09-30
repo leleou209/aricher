@@ -346,6 +346,20 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
   messageConcurrency = "latest" as const;
 
   /**
+   * 关闭 WebSocket 休眠：连接断了，屋子不散。
+   *
+   * 默认 hibernate:true 的行为是「最后一个连接一断，实例随时可以原地冻结」——
+   * 而一轮多段工具链里满是秒级的空等（每步模型调用之间），运行时专挑这些空档
+   * 把实例休眠掉，进行中的流阅读器当场被杀：工具卡悬着「结果没回来」、正文截在
+   * 半截，人回来看到的不是「她还在跑」而是一具尸体。
+   *
+   * 换成内存连接管理器后，连接断了在途工作也照常跑完、落库完，才轮得到回收。
+   * 离开页面、双开另一场聊天，正在跑的这一轮都不受影响 —— 后台任务靠这行活命。
+   * 代价是连接挂着的期间实例不进休眠（内存常驻）：单人聊天，无所谓。
+   */
+  static options = { hibernate: false };
+
+  /**
    * 长思考要扛得住「跑到一半被驱逐 / 断线」。
    *
    * 打开它，这一轮就跑在一个 durable fiber 里：fiber 的登记先落 SQLite，全程握着
@@ -1290,6 +1304,21 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     });
     // 只在真有悬空时才写：这里每轮都进来，没事就是纯读
     if (changed) await this.persistMessages(healed);
+  }
+
+  /**
+   * 断线续跑前的清场。
+   *
+   * chatRecovery 在被掐断的轮次上做的恢复是「残段落库 + 接着续跑」，但被掐断的
+   * 那轮，最后一件事多半是「工具调用发出去了、结果还没回来」——这样的残段直接
+   * 交给模型，Anthropic 会因为 use 和 result 不成对把整个请求拒掉，续跑永远失败，
+   * 回复永远停在半截。先把悬空调用补成「没跑成」，历史合法了，续跑才接得上去。
+   */
+  override async _chatRecoveryContinue(data?: {
+    targetAssistantId?: string;
+  }): Promise<void> {
+    await this.healDanglingToolCalls();
+    await super._chatRecoveryContinue(data);
   }
 
   /** 会话列表（管理员看全部）。顺带把当前对话存一份，列表里的时间才是新的。 */
