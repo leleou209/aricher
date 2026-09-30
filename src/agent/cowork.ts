@@ -20,6 +20,7 @@ import {
   stepCountIs,
   streamText,
   type LanguageModel,
+  type LanguageModelUsage,
   type StreamTextOnFinishCallback,
   type ToolSet,
   type UIMessage,
@@ -229,7 +230,14 @@ import {
   type NoteMeta,
   type NoteRevision,
 } from "./noteStore";
-import { DIGEST_MAX, digestBlock, digestPrompt, planContext } from "./context";
+import {
+  CACHE_PROVIDER_OPTIONS,
+  DIGEST_MAX,
+  digestBlock,
+  digestPrompt,
+  markCacheBreakpoint,
+  planContext,
+} from "./context";
 import {
   EXP_CAP,
   EXP_EVERY,
@@ -1160,25 +1168,59 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
   }
 
   /**
-   * 保证「当前有一个会话」。
-   * 老实例（会话表还不存在时）已经在聊的内容不会丢：新建的会话会把它们收进去。
+   * 保证「当前有一个会话」—— 但只保证指向，不许诺落库。
+   *
+   * 三种情况：
+   * - 指向的会话在库里 → 原样返回；
+   * - 指向在、库里没有（预备栏）→ 只把指向带回去，落库交给 ensureRealSession；
+   * - 压根没有指向 → 老实例手上还揣着没落过库的对话，立刻收进去；
+   *   空着手的新台子只立一根预备栏，等第一句话来了再落库。
+   *
+   * 为什么读路径不落库：从前这里会顺手 insert 一行「新会话」，删一场旧会话
+   * 就多一行空的，列表越删越长。现在「建行」这件事只有聊天入口（ensureRealSession）有权做。
    */
   private ensureActiveSession(): string {
     this.ensureSessions();
     const current = this.state.activeSession;
     if (current && getSession(this.db, current)) return current;
+    if (current) return current;
 
     const id = newSessionId();
+    if (this.messages.length > 0) {
+      insertSession(this.db, {
+        id,
+        title: this.deriveTitle(),
+        visibility: "private",
+        created: new Date().toISOString(),
+        // 已经带着内容的（老实例第一次建表）算「早就有名字了」，
+        // 不去动一场旧对话的名字；空着的就留给模型，等管理员开口那一轮起
+        named: true,
+      });
+      this.patchState({ activeSession: id });
+      saveSessionMessages(this.db, id, this.messages);
+      return id;
+    }
+    // 空着手：只立预备栏。state 里存的是指向，库里还没有这一行
+    this.patchState({ activeSession: id });
+    return id;
+  }
+
+  /**
+   * 预备栏转正：这一轮真的有话要说了，才把当前指向落成一行会话。
+   * 只有聊天的入口（onChatMessage）调它 —— 列列表、切会话、删会话这些读路径
+   * 永远不许顺手建行，不然「新会话」按钮每按一次就多一行空会话。
+   */
+  private ensureRealSession(): string {
+    const id = this.ensureActiveSession();
+    if (getSession(this.db, id)) return id;
     insertSession(this.db, {
       id,
       title: this.deriveTitle(),
       visibility: "private",
       created: new Date().toISOString(),
-      // 已经带着内容的（老实例第一次建表）算「早就有名字了」，
-      // 不去动一场旧对话的名字；空着的就留给模型，等管理员开口那一轮起
-      named: this.messages.length > 0,
+      // 名字留给模型：第一轮答完它会看完开场白起一个更准的（nameSession）
+      named: false,
     });
-    this.patchState({ activeSession: id });
     saveSessionMessages(this.db, id, this.messages);
     return id;
   }
@@ -1301,10 +1343,15 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     }
   }
 
+  /**
+   * 开新会话。没点名（title 空）时只立一根预备栏，不落库 ——
+   * 返回 null，界面等第一句话发出后那轮对话自己转正。
+   * 点了名的（或要公开的）是真会话：名字和公开态当场定下，直接落库。
+   */
   async createSession(
     title?: string,
     visibility?: SessionVisibility,
-  ): Promise<SessionMeta> {
+  ): Promise<SessionMeta | null> {
     this.ensureActiveSession();
     this.settleTurn();
     this.snapshotSession();
@@ -1313,16 +1360,21 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     const id = newSessionId();
     const now = new Date().toISOString();
     const wanted = (title || "").trim();
-    insertSession(this.db, {
-      id,
-      title: wanted || "新会话",
-      visibility: visibility === "public" ? "public" : "private",
-      created: now,
-      // 有人点名要的名字就定住；没给名字的留给模型，等第一轮答完起
-      named: !!wanted,
-    });
+    if (wanted || visibility === "public") {
+      insertSession(this.db, {
+        id,
+        title: wanted || "新会话",
+        visibility: visibility === "public" ? "public" : "private",
+        created: now,
+        // 有人点名要的名字就定住；没给名字的留给模型，等第一轮答完起
+        named: !!wanted,
+      });
+      this.patchState({ activeSession: id });
+      return getSession(this.db, id)!;
+    }
+    // 预备栏：state 里存指向，库里没有这一行。侧栏不出现它，也就不会攒下一排空会话
     this.patchState({ activeSession: id });
-    return getSession(this.db, id)!;
+    return null;
   }
 
   /**
@@ -1431,7 +1483,11 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     return getSession(this.db, id);
   }
 
-  /** 删一场。删掉的正好是当前这场时，就地清空并另起一场，不留「无归属」状态。 */
+  /**
+   * 删一场。删掉的正好是当前这场时，就地清空并立一根预备栏 ——
+   * 不再立刻生成一行「新会话」：从前那一下正是空会话的源头，
+   * 删一场多一行，列表越删越长。预备栏要等他真的开口才转正。
+   */
   async deleteSession(
     id: string,
   ): Promise<{ removed: boolean; active: string }> {
@@ -1446,12 +1502,6 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
 
     await this.clearConversation();
     const next = newSessionId();
-    insertSession(this.db, {
-      id: next,
-      title: "新会话",
-      visibility: "private",
-      created: new Date().toISOString(),
-    });
     this.patchState({ activeSession: next });
     return { removed: true, active: next };
   }
@@ -1909,6 +1959,10 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       this.guestChatTimes.push(now);
     }
 
+    // 预备栏转正：这一轮真的有话说了，当前指向从现在起落成一行会话。
+    // 放在一切读写之前 —— 后面的快照、起名、回想都当它存在
+    this.ensureRealSession();
+
     // 这一轮用哪个模型：生效的模型目录组优先，没有就回落 Worker secrets 那条旧链。
     // 房间开着深度思考（thinkMode=deep）时按主线条目的指向取另一组。
     // 解析结果挂在实例上 —— 维护模型等小活从这拿（见 maintModel），下一轮进来再刷新。
@@ -2002,16 +2056,18 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       // 压缩失败就用全量历史，慢一点但一定对
     }
 
-    // 这四段各司其职，顺序也是这么定的：
-    // 人设（我是谁）→ 自我要求（我要成为什么样，她自己写的）→ 工具说明（我手里有什么，按房间裁）
-    // → 这一轮的外部状态（内核、记忆、任务、提醒……）
-    const system =
+    // 系统提示词按「稳定在前、易变在后」分两段。前缀缓存靠逐字节一致：
+    // 人设、守则、工具说明、内核这些几场对话都不变的东西放头上，
+    // 每轮都换的血（摘要、检索记忆、任务、身份）压到最末 ——
+    // 头上混进一个每轮都变的东西，从那儿往后整段都是白烧。
+    const systemHead =
       buildBasePrompt(this.state.thinkMode, this.personaForPrompt()) +
       selfDemandBlock(this.demandForPrompt()) +
       toolGuide(guest) +
       (this.state.selfModel
         ? "\n\n## 我的内核（会随对话更新）\n" + this.state.selfModel
-        : "") +
+        : "");
+    const systemTail =
       digestBlock(view.digest) +
       memoryBlock +
       publicBlock +
@@ -2028,16 +2084,43 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       toolCalls: "before-last-2-messages",
     });
 
+    // Anthropic 的缓存要挂标记才生效：稳定段单成一条 system 挂断点，
+    // 历史末条挂断点 —— 多步工具往返里每一步至少保住 [工具 + 稳定段]。
+    // 别家格式不吃这套标记，维持单条字符串，靠前缀稳定吃自动缓存。
+    const anthropicCache = resolved.format === "anthropic";
+
     const result = streamText({
       model: resolved.model,
-      system,
-      messages,
+      system: anthropicCache
+        ? [
+            {
+              role: "system",
+              content: systemHead,
+              providerOptions: CACHE_PROVIDER_OPTIONS,
+            },
+            { role: "system", content: systemTail },
+          ]
+        : systemHead + systemTail,
+      messages: anthropicCache ? markCacheBreakpoint(messages) : messages,
       tools: this.buildToolsWithStats(ctx),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: options?.abortSignal,
       onFinish: (r) => {
         // 轮尾收账：这一轮的留痕整块一行落库，再去跑外面的收尾
         this.endVisitorBatch();
+        // 上下文占用回传前端：这一轮烧了多少、窗口还剩多宽，聊天头部直接画出来。
+        // 挂着 sessionId —— 换了场就不显示别场的账。
+        this.patchState({
+          lastUsage: {
+            sessionId: this.state.activeSession,
+            input: r.usage.inputTokens ?? 0,
+            output: r.usage.outputTokens ?? 0,
+            cacheRead: r.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+            cacheWrite: r.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+            contextWindow: resolved.contextWindow,
+          },
+        });
+        this.logCacheHit(r.usage);
         return onFinish(r);
       },
       // 「她正在想什么」只记不发：这里回调期间流是停着的，一次模型调用就能把整轮拖住
@@ -2060,6 +2143,20 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     // 压粗了再交出去：平台那边是「一个流式事件 = 一行写入」，条数直接就是额度。
     // 合并出来的仍是合法事件，落库、重放、前端累加都不受影响（见 coalesce.ts）。
     return coalesceStream(result.toUIMessageStreamResponse());
+  }
+
+  /**
+   * 把这一轮的缓存命中打进日志。inputTokens 是总量（命中 + 新写 + 未缓存，
+   * Anthropic 口径），命中率就是 read / input —— 「序列重排 + 断点」这件事
+   * 收成多少，看这行日志就行；不看数等于白改。
+   */
+  private logCacheHit(u: LanguageModelUsage | undefined): void {
+    if (!u?.inputTokens) return;
+    const read = u.inputTokenDetails?.cacheReadTokens ?? 0;
+    const write = u.inputTokenDetails?.cacheWriteTokens ?? 0;
+    console.log(
+      `[cache] 输入 ${u.inputTokens}：命中 ${read}、新写 ${write}，命中率 ${Math.round((read / u.inputTokens) * 100)}%`,
+    );
   }
 
   /**
@@ -3235,6 +3332,7 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     providerId: string;
     model: string;
     maxOutput?: number;
+    contextWindow?: number;
   }): Promise<ModelEntry> {
     if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
     this.ensureModelConfigs();

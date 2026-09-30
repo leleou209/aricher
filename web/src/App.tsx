@@ -1126,8 +1126,9 @@ function Shell({
     if (busy) halt(); // 换话题之前先让他停下，不然那个回答会追到新会话里
     setPending([]); // 攒着还没发的附件属于上一场的话题，别跟着搬过去
     try {
-      const s = await api.createSession();
-      setActiveSession(s.id);
+      // 后端只立「预备栏」，不立刻落库：侧栏不会多出一行空会话。
+      // 预备栏要等他真的发出第一句话才转正 —— 当前指向跟着后端 state 走
+      await api.createSession();
       await loadSessions();
       flash("已开始新会话");
     } catch (e) {
@@ -1391,6 +1392,27 @@ function Shell({
                 </p>
               </div>
               <div className="chat-actions">
+                {/* 上下文占用：上一轮烧了多少、窗口多宽（账跟着场走，
+                    换了一场或还没聊过都不显示）。悬停看缓存命中率 */}
+                {state.lastUsage &&
+                  state.lastUsage.sessionId === state.activeSession && (
+                    <span
+                      className="chip"
+                      title={`缓存命中 ${Math.round((state.lastUsage.cacheRead / Math.max(state.lastUsage.input, 1)) * 100)}%（输入 ${state.lastUsage.input} · 输出 ${state.lastUsage.output}）`}
+                    >
+                      <span>
+                        ~
+                        {Math.round(
+                          (state.lastUsage.input + state.lastUsage.output) /
+                            1000,
+                        )}
+                        K
+                        {state.lastUsage.contextWindow
+                          ? ` / ${Math.round(state.lastUsage.contextWindow / 1000)}K`
+                          : ""}
+                      </span>
+                    </span>
+                  )}
                 {/* 强度这一格来客也看得见：菜单里的 /deep、/normal 是同一件事的另一个入口，
                     两边都走 /api/think。不给他这一格，他就只能靠指令切、却看不出现在是哪一档 */}
                 <button

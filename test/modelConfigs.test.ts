@@ -28,6 +28,7 @@ import {
   listModelProviders,
   removeModelEntry,
   removeModelProvider,
+  toContextWindow,
   toMaxOutput,
   updateModelEntry,
   updateModelProvider,
@@ -50,6 +51,7 @@ interface ERow {
   provider_id: string;
   model: string;
   max_output: number;
+  context_window: number;
   active: number;
   created: string;
 }
@@ -94,6 +96,9 @@ function fakeDb(legacy: LRow[] = []) {
       return [] as T[];
     }
 
+    // 老表补列（context_window）：真库上列已存在会抛错被吞，假库直接当成功
+    if (sql.startsWith("alter table model_entries")) return [] as T[];
+
     if (
       sql.startsWith("select id, name, format, base_url, key_secret, model")
     ) {
@@ -134,19 +139,21 @@ function fakeDb(legacy: LRow[] = []) {
     }
 
     if (sql.startsWith("insert into model_entries")) {
-      const [id, provider_id, model, max_output, active, created] = values as [
-        string,
-        string,
-        string,
-        number,
-        number,
-        string,
-      ];
+      const [
+        id,
+        provider_id,
+        model,
+        max_output,
+        context_window,
+        active,
+        created,
+      ] = values as [string, string, string, number, number, number, string];
       entries.push({
         id,
         provider_id,
         model,
         max_output: Number(max_output),
+        context_window: Number(context_window),
         active: Number(active),
         created,
       });
@@ -167,8 +174,9 @@ function fakeDb(legacy: LRow[] = []) {
     }
 
     if (sql.startsWith("update model_entries set")) {
-      const [model, max_output, active, id] = values as [
+      const [model, max_output, context_window, active, id] = values as [
         string,
+        number,
         number,
         number,
         string,
@@ -178,6 +186,7 @@ function fakeDb(legacy: LRow[] = []) {
       Object.assign(row, {
         model,
         max_output: Number(max_output),
+        context_window: Number(context_window),
         active: Number(active),
       });
       return [] as T[];
@@ -236,7 +245,9 @@ function fakeDb(legacy: LRow[] = []) {
 
     if (sql.startsWith("select id from model_providers")) {
       const [id] = values as [string];
-      return providers.filter((r) => r.id === id).map((r) => ({ id: r.id })) as T[];
+      return providers
+        .filter((r) => r.id === id)
+        .map((r) => ({ id: r.id })) as T[];
     }
 
     if (sql.startsWith("select id, provider_id, model")) {
@@ -405,6 +416,42 @@ describe("模型条目增删改查", () => {
     expect(toMaxOutput(-1)).toBe(32768);
     expect(toMaxOutput(1.5)).toBe(32768);
     expect(toMaxOutput(undefined)).toBe(32768);
+  });
+
+  it("context_window 建了读得回、改缺省不动；0 = 没设（用默认档）", () => {
+    const { db } = fakeDb();
+    const { provider } = createModelProvider(db, {
+      ...ok,
+      firstModel: "m-1",
+      // 建供应商挂首条时不带 contextWindow：落库 0（= 未设）
+    });
+    const e1 = listModelEntries(db)[0];
+    expect(e1.contextWindow).toBe(0);
+
+    const e2 = createModelEntry(db, {
+      providerId: provider.id,
+      model: "m-2",
+      contextWindow: 200_000,
+    });
+    expect(e2.contextWindow).toBe(200_000);
+    // 缺省不动：只改模型名，窗口保持原样
+    const up = updateModelEntry(db, e2.id, { model: "m-2b" });
+    expect(up?.contextWindow).toBe(200_000);
+    // 给了就换；0 回到「未设」而不是把窗口掐成零宽
+    const up2 = updateModelEntry(db, e2.id, { contextWindow: 1_000_000 });
+    expect(up2?.contextWindow).toBe(1_000_000);
+    expect(
+      updateModelEntry(db, e2.id, { contextWindow: 0 })?.contextWindow,
+    ).toBe(0);
+  });
+
+  it("context_window 只认正整数，其余一律回 0（没设是合法状态）", () => {
+    expect(toContextWindow(200_000)).toBe(200_000);
+    expect(toContextWindow(0)).toBe(0);
+    expect(toContextWindow(-5)).toBe(0);
+    expect(toContextWindow(1.5)).toBe(0);
+    expect(toContextWindow(undefined)).toBe(0);
+    expect(toContextWindow("128000")).toBe(128_000);
   });
 });
 

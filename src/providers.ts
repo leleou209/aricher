@@ -79,10 +79,21 @@ export const TITLE_PROVIDER_OPTIONS = {
 
 // ── 目录链：按模型目录（供应商 + 生效条目）建模 ───────────────
 
-/** 一次解析的结果：主模型 + 输出上限 + 维护模型（后者不可能为 null） */
+/**
+ * 最大上下文的默认档：条目没设 context_window 时回落到这个数。
+ * 主流长窗模型（Claude / GPT / DeepSeek）都在 128K-200K 一带，取 200K 做上限档；
+ * 界面显示占用、压缩门槛都拿它当「这扇门有多宽」的兜底答案。
+ */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/** 一次解析的结果：主模型 + 输出上限 + 接口格式 + 上下文宽度 + 维护模型 */
 export interface ResolvedModel {
   model: LanguageModel;
   maxOutput: number;
+  /** 这条模型走哪种协议：缓存断点等 Anthropic 专属待遇按它开（旧链就是 anthropic） */
+  format: ModelFormat;
+  /** 最大上下文（token）。条目设了用条目的，没设回落默认档 */
+  contextWindow: number;
   maintModel: LanguageModel | null;
 }
 
@@ -154,6 +165,9 @@ export async function resolveModel(
       return {
         model,
         maxOutput: toMaxOutput(entry.maxOutput),
+        format: provider.format,
+        contextWindow:
+          entry.contextWindow > 0 ? entry.contextWindow : DEFAULT_CONTEXT_WINDOW,
         maintModel,
       };
     }
@@ -165,5 +179,11 @@ export async function resolveModel(
 
   const model = mainModel(env);
   if (!model) return null;
-  return { model, maxOutput: 32768, maintModel: maintenanceModel(env) };
+  return {
+    model,
+    maxOutput: 32768,
+    format: "anthropic",
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    maintModel: maintenanceModel(env),
+  };
 }

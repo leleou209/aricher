@@ -229,6 +229,24 @@ export interface ChatState {
    * 它不只是界面状态：后端每轮拼提示词都会读它，于是说「这篇」的时候他知道是哪篇。
    */
   noteFocus: string;
+  /**
+   * 上一轮对话的上下文占用账（后端轮尾回写）；没聊过的场没有这一格。
+   * 聊天头部拿它画「这一场聊到了窗口的几成」，顺带把缓存命中率放进提示里。
+   */
+  lastUsage?: LastUsage;
+}
+
+/** 一轮对话烧掉多少上下文（后端 onChatMessage 轮尾回写，见 src/agent/state.ts） */
+export interface LastUsage {
+  /** 记的是哪一场的账 —— 只在与当前场对上号时才显示 */
+  sessionId: string;
+  /** 输入 token 总量（含缓存命中与新写） */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** 这扇门有多宽（token）；0 = 没设，用默认档 */
+  contextWindow: number;
 }
 
 /** 附件的类别。决定服务端用哪条链路去读它 */
@@ -575,6 +593,11 @@ export interface ModelEntry {
   model: string;
   /** 单次回复的输出上限（token）；0 = 用服务端默认 */
   maxOutput: number;
+  /**
+   * 最大上下文（token）；0 = 没设，界面回落到默认档。
+   * 聊天头部拿它和 lastUsage 对比，显示这一场聊到了窗口的几成。
+   */
+  contextWindow: number;
   active: boolean;
   created: string;
 }

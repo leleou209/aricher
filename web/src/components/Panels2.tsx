@@ -1607,10 +1607,12 @@ interface ProviderDraft {
   maintModel: string;
 }
 
-/** 模型条目草稿：给某家供应商挂模型时用。maxOutput 输入框里是字符串 */
+/** 模型条目草稿：给某家供应商挂模型时用。两个数字输入框里都是字符串 */
 interface EntryDraft {
   model: string;
   maxOutput: string;
+  /** 最大上下文，以 K 计（界面口径）；存库时折回 token */
+  contextWindow: string;
 }
 
 /** 厂商下拉里「空白」那一项的值；"" 留给还没选过的初始态 */
@@ -1663,7 +1665,22 @@ const providerPayloadOf = (d: ProviderDraft) => ({
   maintModel: d.maintModel.trim() || undefined,
 });
 
-const blankEntryDraft = (): EntryDraft => ({ model: "", maxOutput: "" });
+const blankEntryDraft = (): EntryDraft => ({
+  model: "",
+  maxOutput: "",
+  contextWindow: "",
+});
+
+/** 上下文输入框里的 K 值折回 token；空着或不像样返回 undefined（= 不动 / 默认档） */
+const kToTokens = (s: string): number | undefined => {
+  const n = Number(s.trim());
+  return s.trim() && Number.isFinite(n) && n > 0
+    ? Math.round(n * 1000)
+    : undefined;
+};
+
+/** token 数画成 K：200000 → 200K */
+const tokensToK = (n: number): string => `${Math.round(n / 1000)}K`;
 
 /**
  * 模型目录：供应商管「接哪家」（地址、格式、Key 变量名），模型条目挂在各家
@@ -1888,6 +1905,7 @@ export function ModelConfigsPanel() {
         maxOutput: entryDraft.maxOutput.trim()
           ? Number(entryDraft.maxOutput)
           : undefined,
+        contextWindow: kToTokens(entryDraft.contextWindow),
       });
       setEntryDraft(blankEntryDraft());
       await load();
@@ -1906,6 +1924,9 @@ export function ModelConfigsPanel() {
     setEntryEdit({
       model: e.model,
       maxOutput: e.maxOutput ? String(e.maxOutput) : "",
+      contextWindow: e.contextWindow
+        ? String(Math.round(e.contextWindow / 1000))
+        : "",
     });
   };
 
@@ -1918,6 +1939,7 @@ export function ModelConfigsPanel() {
         maxOutput: entryEdit.maxOutput.trim()
           ? Number(entryEdit.maxOutput)
           : undefined,
+        contextWindow: kToTokens(entryEdit.contextWindow),
       });
       setEntryEditId("");
       setEntryEdit(null);
@@ -2185,7 +2207,10 @@ export function ModelConfigsPanel() {
                         <span style={{ fontWeight: 600 }}>{e.model}</span>
                         {e.active && <span className="tag ok">载入中</span>}
                         <span className="meta">
-                          输出上限 {e.maxOutput || "默认"}
+                          输出上限 {e.maxOutput || "默认"} · 上下文{" "}
+                          {e.contextWindow
+                            ? tokensToK(e.contextWindow)
+                            : "默认"}
                         </span>
                       </div>
                       <div className="row-actions">
@@ -2232,6 +2257,17 @@ export function ModelConfigsPanel() {
                                 setEntryEdit({
                                   ...entryEdit,
                                   maxOutput: ev.target.value,
+                                })
+                              }
+                            />
+                            <input
+                              className="field"
+                              placeholder="最大上下文（K，可空）"
+                              value={entryEdit.contextWindow}
+                              onChange={(ev) =>
+                                setEntryEdit({
+                                  ...entryEdit,
+                                  contextWindow: ev.target.value,
                                 })
                               }
                             />
@@ -2308,6 +2344,17 @@ export function ModelConfigsPanel() {
                         setEntryDraft({
                           ...entryDraft,
                           maxOutput: ev.target.value,
+                        })
+                      }
+                    />
+                    <input
+                      className="field"
+                      placeholder="最大上下文（K，可空）"
+                      value={entryDraft.contextWindow}
+                      onChange={(ev) =>
+                        setEntryDraft({
+                          ...entryDraft,
+                          contextWindow: ev.target.value,
                         })
                       }
                     />

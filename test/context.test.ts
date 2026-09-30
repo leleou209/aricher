@@ -12,6 +12,7 @@ import type { UIMessage } from "ai";
 import {
   COMPACT_TRIGGER,
   KEEP_RECENT,
+  markCacheBreakpoint,
   planContext,
 } from "../src/agent/context";
 
@@ -96,5 +97,49 @@ describe("planContext", () => {
       expect(plan.tail.length).toBeGreaterThanOrEqual(2);
       upto = plan.upto;
     }
+  });
+});
+
+describe("markCacheBreakpoint", () => {
+  const text = (t: string) => ({ type: "text" as const, text: t });
+
+  it("数组内容：断点挂在最后一个部件上，其余原样", () => {
+    const msgs = [
+      { role: "user" as const, content: [text("上一句")] },
+      { role: "assistant" as const, content: [text("答")] },
+      { role: "user" as const, content: [text("第一段"), text("第二段")] },
+    ];
+    const out = markCacheBreakpoint(msgs);
+    expect(out).toHaveLength(3);
+    const last = out[2].content as Array<{
+      providerOptions?: Record<string, unknown>;
+    }>;
+    expect(last[0].providerOptions).toBeUndefined();
+    expect(last[1].providerOptions).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+    // 前面的消息一个字节都不该动
+    expect(out[0]).toBe(msgs[0]);
+    expect(out[1]).toBe(msgs[1]);
+  });
+
+  it("字符串内容：包成单条文本部件再挂，不丢正文", () => {
+    const msgs = [{ role: "user" as const, content: "就一句话" }];
+    const out = markCacheBreakpoint(msgs);
+    const parts = out[0].content as Array<{
+      type: string;
+      text?: string;
+      providerOptions?: Record<string, unknown>;
+    }>;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].type).toBe("text");
+    expect(parts[0].text).toBe("就一句话");
+    expect(parts[0].providerOptions).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+
+  it("空数组原样返回，不炸", () => {
+    expect(markCacheBreakpoint([])).toEqual([]);
   });
 });

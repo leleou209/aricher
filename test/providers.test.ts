@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resolveModel } from "../src/providers";
+import { DEFAULT_CONTEXT_WINDOW, resolveModel } from "../src/providers";
 import type {
   ActiveCatalog,
   ModelEntry,
@@ -67,6 +67,7 @@ const entry = (over: Partial<ModelEntry> = {}): ModelEntry => ({
   providerId: "prov0001",
   model: "deepseek-v4-pro",
   maxOutput: 32768,
+  contextWindow: 0,
   active: true,
   created: "2026-01-01T00:00:00.000Z",
   ...over,
@@ -151,6 +152,17 @@ describe("resolveModel：三种格式", () => {
       catalog({}, { maxOutput: 0 }),
     );
     expect(bad?.maxOutput).toBe(32768);
+  });
+
+  it("contextWindow 走条目的：没设（0）回落默认档", async () => {
+    const r = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
+      catalog({}, { contextWindow: 128_000 }),
+    );
+    expect(r?.contextWindow).toBe(128_000);
+    const unset = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
+      catalog({}, { contextWindow: 0 }),
+    );
+    expect(unset?.contextWindow).toBe(DEFAULT_CONTEXT_WINDOW);
   });
 });
 

@@ -273,8 +273,15 @@ export const api = {
 
   // ── 会话（元信息与消息都在后端 DO 里）──
   sessions: () => req<SessionMeta[]>("/api/sessions"),
+  /**
+   * 开新会话。不点名时后端只立「预备栏」不落库，返回 null ——
+   * 真正的会话行要等第一句话发出后才建，免得侧栏攒下一排空会话
+   */
   createSession: (title?: string, visibility?: "private" | "public") =>
-    req<SessionMeta>("/api/sessions", json("POST", { title, visibility })),
+    req<SessionMeta | null>(
+      "/api/sessions",
+      json("POST", { title, visibility }),
+    ),
   /** 切换会话会把这一场的消息灌回对话，返回切换后的元信息 */
   switchSession: (id: string) =>
     req<SessionMeta | null>("/api/sessions/switch", json("POST", { id })),
@@ -505,6 +512,7 @@ export const api = {
     providerId: string;
     model: string;
     maxOutput?: number;
+    contextWindow?: number;
   }) =>
     bizOk<ModelEntry>(
       await req<unknown>("/api/model-configs/entries", json("POST", input)),
@@ -512,7 +520,9 @@ export const api = {
     ),
   /** 含 { id, active: true } = 把这个模型设为当前载入的 */
   modelEntryPatch: async (
-    input: Partial<Pick<ModelEntry, "model" | "maxOutput" | "active">> & {
+    input: Partial<
+      Pick<ModelEntry, "model" | "maxOutput" | "contextWindow" | "active">
+    > & {
       id: string;
     },
   ) =>

@@ -9,7 +9,7 @@
 // 2) 摘要覆盖到哪里，记的是「最后一条被压掉的消息 id」而不是条数。
 //    id 找不到（那条被清了）就退回「保留最近 N 条」，宁可重复摘要，不可错位。
 
-import type { UIMessage } from "ai";
+import type { ModelMessage, UIMessage } from "ai";
 
 /** 最近多少条原样保留。够模型接住当下的话题，又不至于让窗口失控。 */
 export const KEEP_RECENT = 16;
@@ -103,4 +103,46 @@ export function digestBlock(digest: string): string {
     digest.trim() +
     "\n这是我自己压出来的提要，不是原话。要引原话、要较真细节，就用 recall 去翻原文。"
   );
+}
+
+// ── 提示词缓存 ─────────────────────────────────────────────
+//
+// 缓存命中只有一个决定因素：前缀逐字节一致。断点本身不产生命中，
+// 它只决定「缓存写到哪」。所以命中率的大头在序列怎么排（稳定段在前、
+// 动态段压尾、历史 append-only），断点只是把这份秩序记进账本。
+
+/** Anthropic 语义的缓存断点标记。别家厂商不认 anthropic 这个键，原样忽略 */
+export const CACHE_PROVIDER_OPTIONS = {
+  anthropic: { cacheControl: { type: "ephemeral" } },
+} as const;
+
+/**
+ * 给最后一条消息打缓存断点（Anthropic 语义；别家不该调它）。
+ *
+ * 为什么打在最后一条：历史是 append-only 的，这一轮的「最后一条」到了下一轮
+ * 就躺在历史里 —— 上一轮写下的缓存前缀这一轮原样出现，模型只需读新长出来的
+ * 一小段。每轮一次缓存写入，换长会话里绝大部分输入按缓存价计。
+ *
+ * 字符串内容没有可挂 providerOptions 的部件，包成单条文本部件再挂：
+ * 建模方对两种形状的归一结果相同，不改变发出去的请求体。
+ */
+export function markCacheBreakpoint(messages: ModelMessage[]): ModelMessage[] {
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+  const parts = (
+    Array.isArray(last.content)
+      ? [...last.content]
+      : [{ type: "text" as const, text: last.content }]
+  ) as Array<Record<string, unknown>>;
+  if (!parts.length) return messages;
+  parts[parts.length - 1] = {
+    ...parts[parts.length - 1],
+    providerOptions: CACHE_PROVIDER_OPTIONS,
+  };
+  const out = [...messages];
+  out[out.length - 1] = {
+    ...last,
+    content: parts,
+  } as ModelMessage;
+  return out;
 }

@@ -1012,6 +1012,10 @@ async function handleApi(
             model,
             maxOutput:
               typeof body.maxOutput === "number" ? body.maxOutput : undefined,
+            contextWindow:
+              typeof body.contextWindow === "number"
+                ? body.contextWindow
+                : undefined,
           }),
         ),
       );
@@ -1031,6 +1035,10 @@ async function handleApi(
             model: typeof body.model === "string" ? body.model : undefined,
             maxOutput:
               typeof body.maxOutput === "number" ? body.maxOutput : undefined,
+            contextWindow:
+              typeof body.contextWindow === "number"
+                ? body.contextWindow
+                : undefined,
             active: typeof body.active === "boolean" ? body.active : undefined,
           }),
         ),

@@ -47,6 +47,11 @@ export interface ModelEntry {
   providerId: string;
   model: string;
   maxOutput: number;
+  /**
+   * 最大上下文（token 数）。0 = 没设，界面与工具回落到默认档。
+   * 这是「这扇门有多宽」：界面拿它显示当前上下文占用，超过就该靠压缩接住。
+   */
+  contextWindow: number;
   active: boolean;
   created: string;
 }
@@ -73,6 +78,7 @@ interface EntryRow {
   provider_id: string;
   model: string;
   max_output: number;
+  context_window: number | null;
   active: number | boolean;
   created: string;
 }
@@ -102,6 +108,7 @@ export interface ModelProviderPatch {
 export interface ModelEntryPatch {
   model?: string;
   maxOutput?: number;
+  contextWindow?: number;
   active?: boolean;
 }
 
@@ -129,6 +136,7 @@ function rowToEntry(r: EntryRow): ModelEntry {
     providerId: r.provider_id,
     model: r.model,
     maxOutput: Number(r.max_output),
+    contextWindow: toContextWindow(r.context_window),
     active: toBool(r.active),
     created: r.created,
   };
@@ -149,6 +157,15 @@ function assertFormat(format: string): void {
 export function toMaxOutput(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isInteger(n) && n > 0 ? n : 32768;
+}
+
+/**
+ * context_window 只认正整数，其余一律回到 0（= 未设，用默认档）。
+ * 「没设」是合法状态 —— 不是每家都报得上准数，报不上就别瞎填。
+ */
+export function toContextWindow(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
 // ── 老单表（model_configs）→ 两级的惰性迁移 ─────────────────
@@ -185,9 +202,9 @@ function migrateLegacyConfigs(sql: SqlTag): void {
         VALUES (${providerId}, ${row.name}, ${row.format}, ${row.base_url},
                 ${row.key_secret}, ${row.maint_key_secret}, ${row.maint_model},
                 ${row.created})`;
-    sql`INSERT INTO model_entries (id, provider_id, model, max_output, active, created)
+    sql`INSERT INTO model_entries (id, provider_id, model, max_output, context_window, active, created)
         VALUES (${row.id}, ${providerId}, ${row.model},
-                ${toMaxOutput(row.max_output)},
+                ${toMaxOutput(row.max_output)}, ${0},
                 ${toBool(row.active) ? 1 : 0}, ${row.created})`;
   }
   // 历史脏数据兜底：active 理论上最多一条，真有多条就留最早那笔
@@ -218,6 +235,12 @@ export function ensureModelCatalogSchema(sql: SqlTag): void {
        active      INTEGER DEFAULT 0,
        created     TEXT
      )`;
+  // 老表补列：create table if not exists 不会给已存在的表加列（0 = 未设，用默认档）
+  try {
+    sql`ALTER TABLE model_entries ADD COLUMN context_window INTEGER DEFAULT 0`;
+  } catch {
+    // 列已存在
+  }
   migrateLegacyConfigs(sql);
 }
 
@@ -357,7 +380,7 @@ export function removeModelProvider(sql: SqlTag, id: string): boolean {
 
 function entryById(sql: SqlTag, id: string): ModelEntry | null {
   const rows = sql<EntryRow>`
-    SELECT id, provider_id, model, max_output, active, created
+    SELECT id, provider_id, model, max_output, context_window, active, created
     FROM model_entries WHERE id = ${id}`;
   return rows.length ? rowToEntry(rows[0]) : null;
 }
@@ -371,7 +394,7 @@ export function getModelEntryById(sql: SqlTag, id: string): ModelEntry | null {
 export function listModelEntries(sql: SqlTag): ModelEntry[] {
   ensureModelCatalogSchema(sql);
   return sql<EntryRow>`
-    SELECT id, provider_id, model, max_output, active, created
+    SELECT id, provider_id, model, max_output, context_window, active, created
     FROM model_entries ORDER BY created`.map(rowToEntry);
 }
 
@@ -379,7 +402,7 @@ export function listModelEntries(sql: SqlTag): ModelEntry[] {
 export function getActiveModelEntry(sql: SqlTag): ModelEntry | null {
   ensureModelCatalogSchema(sql);
   const rows = sql<EntryRow>`
-    SELECT id, provider_id, model, max_output, active, created
+    SELECT id, provider_id, model, max_output, context_window, active, created
     FROM model_entries WHERE active = 1 ORDER BY created`;
   return rows.length ? rowToEntry(rows[0]) : null;
 }
@@ -396,7 +419,12 @@ function promoteLatestEntry(sql: SqlTag): void {
  */
 export function createModelEntry(
   sql: SqlTag,
-  input: { providerId: string; model: string; maxOutput?: number },
+  input: {
+    providerId: string;
+    model: string;
+    maxOutput?: number;
+    contextWindow?: number;
+  },
 ): ModelEntry {
   ensureModelCatalogSchema(sql);
   const model = (input.model || "").trim().slice(0, 120);
@@ -409,12 +437,13 @@ export function createModelEntry(
     provider_id: input.providerId,
     model,
     max_output: toMaxOutput(input.maxOutput),
+    context_window: toContextWindow(input.contextWindow),
     active: noActive ? 1 : 0,
     created: new Date().toISOString(),
   };
-  sql`INSERT INTO model_entries (id, provider_id, model, max_output, active, created)
+  sql`INSERT INTO model_entries (id, provider_id, model, max_output, context_window, active, created)
       VALUES (${row.id}, ${row.provider_id}, ${row.model}, ${row.max_output},
-              ${row.active}, ${row.created})`;
+              ${row.context_window}, ${row.active}, ${row.created})`;
   return rowToEntry(row);
 }
 
@@ -440,10 +469,15 @@ export function updateModelEntry(
       patch.maxOutput === undefined
         ? cur.maxOutput
         : toMaxOutput(patch.maxOutput),
+    contextWindow:
+      patch.contextWindow === undefined
+        ? cur.contextWindow
+        : toContextWindow(patch.contextWindow),
     active: patch.active === undefined ? cur.active : patch.active,
   };
   sql`UPDATE model_entries SET model = ${next.model},
-        max_output = ${next.maxOutput}, active = ${next.active ? 1 : 0}
+        max_output = ${next.maxOutput}, context_window = ${next.contextWindow},
+        active = ${next.active ? 1 : 0}
       WHERE id = ${id}`;
   return entryById(sql, id);
 }

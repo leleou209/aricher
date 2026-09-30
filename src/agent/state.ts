@@ -230,6 +230,25 @@ export interface ChatState {
    * 只在数字真的动了的那一轮写回，免得白占一次 state 落盘。
    */
   usage?: UsageSnapshot;
+  /**
+   * 上一轮对话的上下文占用账：输入（含缓存命中/新写）、输出、窗口多宽。
+   * 聊天头部拿它画「这一场聊到了窗口的几成」；挂着 sessionId，
+   * 换了场就不显示别场的账。可选：老 state 与没聊过的场都没有这一格。
+   */
+  lastUsage?: LastUsage;
+}
+
+/** 一轮对话烧掉多少上下文（onChatMessage 轮尾回写，见 cowork.ts） */
+export interface LastUsage {
+  /** 记的是哪一场的账 —— 前端只在与当前场对上号时才显示 */
+  sessionId: string;
+  /** 输入 token 总量（含缓存命中与新写） */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** 这扇门有多宽（token）；0 = 没设，用默认档 */
+  contextWindow: number;
 }
 
 /** `/api/seed` 接受的批量导入指令（兼容已有的种子数据） */
