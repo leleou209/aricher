@@ -812,6 +812,73 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
 };
 
 /**
+ * 版本与更新：显示当前版本（package.json）与构建号（git 短 hash），
+ * 点「检查更新」拿构建号去对开源仓库的最新提交 —— 那边比这边新，
+ * 说明这台私有部署落后了，列一笔对方的最新提交给你看。
+ */
+function VersionCard() {
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<{
+    upToDate: boolean;
+    latest: { hash: string; message: string; date: string } | null;
+  } | null>(null);
+  const [err, setErr] = useState("");
+
+  const check = async () => {
+    setChecking(true);
+    setErr("");
+    try {
+      setResult(await api.updateCheck());
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="settings-card">
+      <div className="card-header">
+        <h3 className="card-title">版本与更新</h3>
+        <p className="card-desc">
+          版本号取自 package.json，构建号是发布时的那次提交
+        </p>
+      </div>
+      <div className="toggle-list">
+        <div className="toggle-row">
+          <div className="toggle-info">
+            <div className="toggle-icon">
+              <Icon name="play" size={17} />
+            </div>
+            <div className="toggle-text">
+              <div className="toggle-title">ericher v{__APP_VERSION__}</div>
+              <div className="toggle-desc">构建 {__GIT_HASH__}</div>
+            </div>
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => void check()}
+            disabled={checking}
+          >
+            {checking ? "检查中…" : "检查更新"}
+          </button>
+        </div>
+        {err && <p className="err">{err}</p>}
+        {result && (
+          <p className="meta">
+            {result.upToDate
+              ? "已是最新 —— 与开源仓库的 main 一致。"
+              : result.latest
+                ? `开源仓库有新提交（${result.latest.hash}）：${result.latest.message}`
+                : "开源仓库还没有提交记录。"}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * 模式指派：把模型目录里的条目分给「普通模式」和「深度思考」两个槽位。
  * 普通 = 载入中的那个条目（activate 语义）；深度 = state.deepConfigId，
  * 空着表示跟普通同一个。删掉的条目会自动从槽位上摘下来（后端兜底）。
@@ -1142,6 +1209,8 @@ export function SettingsPage({
             )}
 
             {/* 额度账只有管理员看得到：它是这间屋子的运行账，不是访客该操心的 */}
+            {section === "about" && <VersionCard />}
+
             {section === "about" && isAdmin && (
               <div className="settings-card">
                 <div className="card-header">

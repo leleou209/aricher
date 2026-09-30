@@ -1,5 +1,7 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
 import react from "@vitejs/plugin-react";
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -16,7 +18,25 @@ import { defineConfig } from "vitest/config";
  */
 const isTest = !!process.env.VITEST;
 
+/**
+ * 构建期常量：版本号唯一来源是 package.json，构建号是当前 git 短 hash。
+ * Worker 与前端共用同一对常量 —— 关于页显示它们，更新检查拿构建号去和
+ * 开源仓库的最新提交对（见 /api/update-check）。
+ */
+const pkg = JSON.parse(
+  readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf8"),
+) as {
+  version: string;
+};
+const gitHash = isTest
+  ? "test"
+  : execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __GIT_HASH__: JSON.stringify(gitHash),
+  },
   root: path.resolve(import.meta.dirname, "web"),
   plugins: [
     ...(isTest

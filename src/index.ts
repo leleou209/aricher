@@ -873,6 +873,45 @@ async function handleApi(
     return writeState(Promise.resolve(agent.removeGuestType(id)));
   }
 
+  // ── 更新检查：拿本机构建号去对开源仓库的最新提交 ──
+  // 公开仓库（ericher）是交付出口：那边比这边新，说明私有部署落后了。
+  // 转发放到 Worker 端而不是浏览器直连 —— Cloudflare 到 GitHub 的路比访客
+  // 浏览器到 GitHub 的路稳得多，而且不用在前端暴露对 api.github.com 的依赖。
+  if (p === "/api/update-check" && m === "GET") {
+    try {
+      const r = await fetch(
+        "https://api.github.com/repos/leleou209/ericher/commits/main",
+        {
+          headers: {
+            "User-Agent": "ericher-update-check",
+            Accept: "application/vnd.github+json",
+          },
+        },
+      );
+      if (!r.ok)
+        return Response.json(
+          { ok: false, error: `GitHub 返回 ${r.status}` },
+          { status: 502 },
+        );
+      const j = (await r.json()) as {
+        sha: string;
+        commit: { message: string; committer?: { date?: string } };
+      };
+      const latest = {
+        hash: j.sha.slice(0, 7),
+        message: (j.commit.message.split("\n")[0] || "").slice(0, 100),
+        date: j.commit.committer?.date || "",
+      };
+      return Response.json({
+        ok: true,
+        upToDate: latest.hash === __GIT_HASH__,
+        latest,
+      });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+
   // ── 模型目录（供应商 + 模型条目两级）：这张台子用哪家模型，只有管理员能碰 ──
   // 表在主人那间，回显里只有 secret 的变量名（keySecret）—— key 本体在
   // Worker secrets 里，从不落库、从不外发。keySecrets 是已知钥匙名单：

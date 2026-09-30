@@ -445,6 +445,14 @@ export const api = {
       method: "DELETE",
     }),
 
+  // ── 版本与更新检查 ──
+  /** 拿本机构建号去对开源仓库的最新提交；latest 是对方 main 分支最新一笔 */
+  updateCheck: async () =>
+    bizOk<{
+      upToDate: boolean;
+      latest: { hash: string; message: string; date: string } | null;
+    }>(await req<unknown>("/api/update-check"), "检查更新失败"),
+
   // ── 模型目录（供应商 + 模型条目两级；仅管理员）──
   /**
    * keySecrets 是这台机器已配置的 secret 名（wrangler secret put 过的那些），
