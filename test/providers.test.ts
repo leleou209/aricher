@@ -12,7 +12,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolveModel } from "../src/providers";
-import type { ModelConfig } from "../src/agent/modelConfigs";
+import type {
+  ActiveCatalog,
+  ModelEntry,
+  ModelProvider,
+} from "../src/agent/modelConfigs";
 
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: vi.fn() }));
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: vi.fn() }));
@@ -46,19 +50,32 @@ beforeEach(() => {
   );
 });
 
-const cfg = (over: Partial<ModelConfig> = {}): ModelConfig => ({
-  id: "abcd1234",
+const provider = (over: Partial<ModelProvider> = {}): ModelProvider => ({
+  id: "prov0001",
   name: "测试厂商",
   format: "anthropic",
   baseUrl: "https://api.example.com",
   keySecret: "DEEPSEEK_KEY",
-  model: "deepseek-v4-pro",
-  maxOutput: 32768,
   maintKeySecret: "",
   maintModel: "",
-  active: true,
+  created: "2026-01-01T00:00:00.000Z",
   ...over,
 });
+
+const entry = (over: Partial<ModelEntry> = {}): ModelEntry => ({
+  id: "abcd1234",
+  providerId: "prov0001",
+  model: "deepseek-v4-pro",
+  maxOutput: 32768,
+  active: true,
+  created: "2026-01-01T00:00:00.000Z",
+  ...over,
+});
+
+const catalog = (
+  p: Partial<ModelProvider> = {},
+  e: Partial<ModelEntry> = {},
+): ActiveCatalog => ({ provider: provider(p), entry: entry(e) });
 
 const env = (over: Record<string, unknown> = {}): Env =>
   ({ ...over }) as unknown as Env;
@@ -66,7 +83,7 @@ const env = (over: Record<string, unknown> = {}): Env =>
 describe("resolveModel：三种格式", () => {
   it("anthropic：createAnthropic({ baseURL, apiKey }) 再调用即模型", async () => {
     const r = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
-      cfg(),
+      catalog(),
     );
     expect(createAnthropic).toHaveBeenCalledTimes(1);
     expect(createAnthropic).toHaveBeenCalledWith({
@@ -85,49 +102,63 @@ describe("resolveModel：三种格式", () => {
 
   it("openai-chat：走 provider 的 .chat", async () => {
     const r = await resolveModel(env({ OPENAI_KEY: "sk-2" }), async () =>
-      cfg({ format: "openai-chat", keySecret: "OPENAI_KEY" }),
+      catalog(
+        { format: "openai-chat", keySecret: "OPENAI_KEY" },
+        { model: "gpt-5.2" },
+      ),
     );
     expect(createOpenAI).toHaveBeenCalledWith({
       apiKey: "sk-2",
       baseURL: "https://api.example.com",
     });
-    expect(openaiProvider.chat).toHaveBeenCalledWith("deepseek-v4-pro");
+    expect(openaiProvider.chat).toHaveBeenCalledWith("gpt-5.2");
     expect(openaiProvider.responses).not.toHaveBeenCalled();
     expect(r?.model).toEqual({
       vendor: "openai-chat",
-      modelId: "deepseek-v4-pro",
+      modelId: "gpt-5.2",
     });
   });
 
   it("openai-responses：走 provider 的 .responses", async () => {
     const r = await resolveModel(env({ OPENAI_KEY: "sk-3" }), async () =>
-      cfg({ format: "openai-responses", keySecret: "OPENAI_KEY" }),
+      catalog(
+        { format: "openai-responses", keySecret: "OPENAI_KEY" },
+        { model: "gpt-5.2" },
+      ),
     );
-    expect(openaiProvider.responses).toHaveBeenCalledWith("deepseek-v4-pro");
+    expect(openaiProvider.responses).toHaveBeenCalledWith("gpt-5.2");
     expect(openaiProvider.chat).not.toHaveBeenCalled();
     expect(r?.model).toEqual({
       vendor: "openai-responses",
-      modelId: "deepseek-v4-pro",
+      modelId: "gpt-5.2",
     });
   });
 
-  it("maxOutput 透传；只认正整数", async () => {
+  it("同一供应商换模型条目：地址与 key 不变，只换模型名", async () => {
+    await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
+      catalog({}, { model: "deepseek-flash" }),
+    );
+    expect(createAnthropic).toHaveBeenCalledTimes(1);
+    expect(anthropicProvider).toHaveBeenCalledWith("deepseek-flash");
+  });
+
+  it("maxOutput 走条目的，透传且只认正整数", async () => {
     const r = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
-      cfg({ maxOutput: 8192 }),
+      catalog({}, { maxOutput: 8192 }),
     );
     expect(r?.maxOutput).toBe(8192);
     const bad = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
-      cfg({ maxOutput: 0 }),
+      catalog({}, { maxOutput: 0 }),
     );
     expect(bad?.maxOutput).toBe(32768);
   });
 });
 
-describe("resolveModel：维护模型", () => {
-  it("maintKeySecret 独立配了 key：另建一个模型，模型名缺省复用主线", async () => {
+describe("resolveModel：维护模型（供应商级维护口）", () => {
+  it("维护 key 独立配了：另建一个模型，模型名缺省复用主线条目", async () => {
     const r = await resolveModel(
       env({ DEEPSEEK_KEY: "sk-1", SK_MAINTENANCE: "sk-m" }),
-      async () => cfg({ maintKeySecret: "SK_MAINTENANCE" }),
+      async () => catalog({ maintKeySecret: "SK_MAINTENANCE" }),
     );
     expect(createAnthropic).toHaveBeenCalledTimes(2);
     expect(createAnthropic).toHaveBeenNthCalledWith(2, {
@@ -138,16 +169,19 @@ describe("resolveModel：维护模型", () => {
     expect(r?.maintModel).not.toBe(r?.model);
   });
 
-  it("maintModel 写了名字：跟着走；key 没配：复用主模型", async () => {
+  it("维护模型写了名字：跟着走；key 没配：复用主模型", async () => {
     const named = await resolveModel(
       env({ DEEPSEEK_KEY: "sk-1", SK_MAINTENANCE: "sk-m" }),
       async () =>
-        cfg({ maintKeySecret: "SK_MAINTENANCE", maintModel: "deepseek-flash" }),
+        catalog({
+          maintKeySecret: "SK_MAINTENANCE",
+          maintModel: "deepseek-flash",
+        }),
     );
     expect(anthropicProvider).toHaveBeenNthCalledWith(2, "deepseek-flash");
 
     const noKey = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
-      cfg({ maintKeySecret: "NOT_SET" }),
+      catalog({ maintKeySecret: "NOT_SET", maintModel: "deepseek-flash" }),
     );
     expect(noKey?.maintModel).toBe(noKey?.model);
   });
@@ -159,9 +193,9 @@ describe("resolveModel：回落旧链", () => {
     modelId: "claude-sonnet-4-20250514",
   };
 
-  it("目录点名的那把 key 没配：回落 mainModel，maxOutput 32768", async () => {
+  it("供应商点名的那把 key 没配：回落 mainModel，maxOutput 32768", async () => {
     const r = await resolveModel(env({ API_KEY: "k" }), async () =>
-      cfg({ keySecret: "NOT_SET" }),
+      catalog({ keySecret: "NOT_SET" }),
     );
     // 回落走的是旧链 provider（env.API_ENDPOINT 缺省到官方地址）
     expect(createAnthropic).toHaveBeenCalledWith({
@@ -173,7 +207,7 @@ describe("resolveModel：回落旧链", () => {
     expect(r?.maxOutput).toBe(32768);
   });
 
-  it("没有生效配置：回落旧链，维护模型跟 maintenanceModel", async () => {
+  it("没有生效条目：回落旧链，维护模型跟 maintenanceModel", async () => {
     const r = await resolveModel(
       env({ API_KEY: "k", SK_MAINTENANCE: "km", API_MODEL: "" }),
       async () => null,

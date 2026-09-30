@@ -552,22 +552,31 @@ export type ModelFormat = "anthropic" | "openai-chat" | "openai-responses";
 /** 读音服务的接法。决定这一条怎么发请求、参数叫什么名字 */
 export type TtsProtocol = "mimo-chat" | "doubao" | "glm-speech";
 
-/** 一套模型配置：接哪家、地址、Key 变量名与模型名。active 的是正在载入的那套 */
-export interface ModelConfig {
+/** 一家模型供应商：接哪一家的钥匙串（名称、地址、格式、Key 变量名），模型条目挂它底下 */
+export interface ModelProvider {
   id: string;
+  /** 供应商名称 */
   name: string;
   format: ModelFormat;
   baseUrl: string;
   /** Key 存的是 secret 变量名（wrangler secret put 过的），不是 Key 本身 */
   keySecret: string;
+  /** 维护性调用（后台整理记忆之类的活）专用的 Key；空 = 用本家那把 */
+  maintKeySecret: string;
+  /** 维护性调用专用的小模型；空 = 复用当前生效的主线模型 */
+  maintModel: string;
+  created: string;
+}
+
+/** 一个模型条目：某家供应商底下的一个可用模型。active 的是正在载入的那个 */
+export interface ModelEntry {
+  id: string;
+  providerId: string;
   model: string;
   /** 单次回复的输出上限（token）；0 = 用服务端默认 */
   maxOutput: number;
-  /** 维护性调用（后台整理记忆之类的活）专用的 Key；空 = 复用主线 */
-  maintKeySecret: string;
-  /** 维护性调用专用的小模型；空 = 复用主线 */
-  maintModel: string;
   active: boolean;
+  created: string;
 }
 
 /** 一条读音配置：一条就是一副可用的嗓子，排在最前且 Key 可用的那条是默认 */

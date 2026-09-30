@@ -9,8 +9,9 @@ import type {
   ChatState,
   FeedbackSummary,
   MemEntry,
-  ModelConfig,
+  ModelEntry,
   ModelFormat,
+  ModelProvider,
   MsgComment,
   Note,
   NoteMeta,
@@ -444,50 +445,78 @@ export const api = {
       method: "DELETE",
     }),
 
-  // ── 模型配置（接哪家模型由这里的条目决定；仅管理员）──
+  // ── 模型目录（供应商 + 模型条目两级；仅管理员）──
   /**
    * keySecrets 是这台机器已配置的 secret 名（wrangler secret put 过的那些），
    * 供表单下拉挑选 —— 配没配过一眼就知道。数组做兜底：形状没对上就当空。
    */
-  modelConfigs: async (): Promise<{
-    configs: ModelConfig[];
+  modelCatalog: async (): Promise<{
+    providers: ModelProvider[];
+    entries: ModelEntry[];
     keySecrets: string[];
   }> => {
     const r = bizOk<{
-      configs?: ModelConfig[];
+      providers?: ModelProvider[];
+      entries?: ModelEntry[];
       keySecrets?: string[];
-    }>(await req<unknown>("/api/model-configs"), "读取模型配置失败");
+    }>(await req<unknown>("/api/model-configs"), "读取模型目录失败");
     return {
-      configs: Array.isArray(r?.configs) ? r.configs : [],
+      providers: Array.isArray(r?.providers) ? r.providers : [],
+      entries: Array.isArray(r?.entries) ? r.entries : [],
       keySecrets: Array.isArray(r?.keySecrets) ? r.keySecrets : [],
     };
   },
-  modelConfigAdd: async (input: {
+  /** 新建一家供应商。firstModel 给了就顺手挂上首个模型条目 */
+  modelProviderAdd: async (input: {
     name: string;
     format: ModelFormat;
     baseUrl: string;
     keySecret: string;
-    model: string;
-    maxOutput?: number;
     maintKeySecret?: string;
     maintModel?: string;
+    firstModel?: string;
+    maxOutput?: number;
   }) =>
-    bizOk<ModelConfig>(
-      await req<unknown>("/api/model-configs", json("POST", input)),
-      "保存模型配置失败",
+    bizOk<{ provider: ModelProvider; entry: ModelEntry | null }>(
+      await req<unknown>("/api/model-configs/providers", json("POST", input)),
+      "保存供应商失败",
     ),
-  /** 含 { id, active: true } = 把这一套设为当前载入的配置 */
-  modelConfigPatch: async (
-    input: Partial<Omit<ModelConfig, "id">> & { id: string },
+  modelProviderPatch: async (
+    input: Partial<Omit<ModelProvider, "id" | "created">> & { id: string },
   ) =>
-    bizOk<ModelConfig>(
-      await req<unknown>("/api/model-configs", json("PATCH", input)),
-      "保存模型配置失败",
+    bizOk<ModelProvider>(
+      await req<unknown>("/api/model-configs/providers", json("PATCH", input)),
+      "保存供应商失败",
     ),
-  modelConfigDelete: (id: string) =>
-    req<{ ok: boolean }>(`/api/model-configs?id=${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }),
+  modelProviderDelete: (id: string) =>
+    req<{ ok: boolean }>(
+      `/api/model-configs/providers?id=${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  modelEntryAdd: async (input: {
+    providerId: string;
+    model: string;
+    maxOutput?: number;
+  }) =>
+    bizOk<ModelEntry>(
+      await req<unknown>("/api/model-configs/entries", json("POST", input)),
+      "添加模型失败",
+    ),
+  /** 含 { id, active: true } = 把这个模型设为当前载入的 */
+  modelEntryPatch: async (
+    input: Partial<Pick<ModelEntry, "model" | "maxOutput" | "active">> & {
+      id: string;
+    },
+  ) =>
+    bizOk<ModelEntry>(
+      await req<unknown>("/api/model-configs/entries", json("PATCH", input)),
+      "保存模型失败",
+    ),
+  modelEntryDelete: (id: string) =>
+    req<{ ok: boolean }>(
+      `/api/model-configs/entries?id=${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
   /** 让服务端去问那家「你有哪些模型」。失败把后端的 error 原样带回（面板就地显示） */
   modelListModels: async (input: {
     format: ModelFormat;

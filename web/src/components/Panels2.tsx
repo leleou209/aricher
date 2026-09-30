@@ -20,8 +20,9 @@ import {
   type ChatState,
   type GuestType,
   type MemEntry,
-  type ModelConfig,
+  type ModelEntry,
   type ModelFormat,
+  type ModelProvider,
   type PublicPost,
   type R2File,
   type SessionMeta,
@@ -1593,23 +1594,28 @@ export function GuestTypesPanel() {
 // ── 模型配置 ──────────────────────────────────────────
 
 /**
- * 行内编辑与新表单共用的草稿。
- * maxOutput 在输入框里是字符串（空着 = 用服务端默认），提交时再转数字。
+ * 供应商表单草稿（新增与编辑共用）。
+ * 名称就是供应商名称 —— 旧表单「名称 vs 模型名」的二义性已经拆开：
+ * 供应商级管接哪一家，模型名归各家底下的模型条目。
  */
-interface ModelDraft {
+interface ProviderDraft {
   name: string;
   format: ModelFormat;
   baseUrl: string;
   keySecret: string;
-  model: string;
-  maxOutput: string;
   maintKeySecret: string;
   maintModel: string;
 }
 
+/** 模型条目草稿：给某家供应商挂模型时用。maxOutput 输入框里是字符串 */
+interface EntryDraft {
+  model: string;
+  maxOutput: string;
+}
+
 /** 厂商下拉里「空白」那一项的值；"" 留给还没选过的初始态 */
 const BLANK_PRESET = "__blank";
-/** 拉模型列表的 chips 挂在新增表单下时用的 scope 值（配置行用各自 id） */
+/** 拉模型列表的 chips 挂在新增表单下时用的 scope 值（供应商行用各自 id） */
 const ADD_SCOPE = "__add";
 
 /**
@@ -1629,65 +1635,74 @@ const urlForFormat = (
   return null;
 };
 
-const blankModelDraft = (): ModelDraft => ({
+const blankProviderDraft = (): ProviderDraft => ({
   name: "",
   format: "anthropic",
   baseUrl: "",
   keySecret: "",
-  model: "",
-  maxOutput: "",
   maintKeySecret: "",
   maintModel: "",
 });
 
-const modelDraftOf = (c: ModelConfig): ModelDraft => ({
-  name: c.name,
-  format: c.format,
-  baseUrl: c.baseUrl,
-  keySecret: c.keySecret,
-  model: c.model,
-  maxOutput: c.maxOutput ? String(c.maxOutput) : "",
-  maintKeySecret: c.maintKeySecret,
-  maintModel: c.maintModel,
+const providerDraftOf = (p: ModelProvider): ProviderDraft => ({
+  name: p.name,
+  format: p.format,
+  baseUrl: p.baseUrl,
+  keySecret: p.keySecret,
+  maintKeySecret: p.maintKeySecret,
+  maintModel: p.maintModel,
 });
 
-/** 提交前折成请求体：空串的字段不传，「留空 = 复用主线 / 默认」的语义交给后端 */
-const modelPayloadOf = (d: ModelDraft) => ({
+/** 提交前折成请求体：空串的字段不传，「留空 = 用本家 / 复用主线」的语义交给后端 */
+const providerPayloadOf = (d: ProviderDraft) => ({
   name: d.name.trim(),
   format: d.format,
   baseUrl: d.baseUrl.trim(),
   keySecret: d.keySecret.trim(),
-  model: d.model.trim(),
-  maxOutput: d.maxOutput.trim() ? Number(d.maxOutput) : undefined,
   maintKeySecret: d.maintKeySecret.trim() || undefined,
   maintModel: d.maintModel.trim() || undefined,
 });
 
+const blankEntryDraft = (): EntryDraft => ({ model: "", maxOutput: "" });
+
 /**
- * 模型配置：一条就是一套「接哪家模型」的钥匙串 —— 地址、格式、Key 变量名、模型名。
+ * 模型目录：供应商管「接哪家」（地址、格式、Key 变量名），模型条目挂在各家
+ * 底下、随便挂几个，点「设为当前」换着用 —— 一家供应商不再只绑死一个模型。
  * 厂商表帮人起头（选一家带出地址与坑，都写在 note 里），模型名靠「拉取模型列表」
- * 从厂商现拉现挑，行内编辑改细节；「设为当前」是把这一套挂上线，
- * 下一轮对话就换它出马，不用重启。Key 存的是 secret 变量名：Key 本身永远不进浏览器。
+ * 从厂商现拉现挑；「设为当前」是把这个模型挂上线，下一轮对话就换它出马。
+ * Key 存的是 secret 变量名：Key 本身永远不进浏览器。
  */
 export function ModelConfigsPanel() {
-  const [configs, setConfigs] = useState<ModelConfig[]>([]);
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [entries, setEntries] = useState<ModelEntry[]>([]);
   const [keySecrets, setKeySecrets] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // 新增表单：先挑厂商（或空白）预填「接哪一家」，模型名留给拉取列表后现挑
+  // 新增供应商表单：先挑厂商（或空白）预填「接哪一家」，首个模型可空、之后再加
   const [vendorKey, setVendorKey] = useState("");
-  const [draft, setDraft] = useState<ModelDraft>(blankModelDraft);
+  const [draft, setDraft] = useState<ProviderDraft>(blankProviderDraft);
+  const [firstModel, setFirstModel] = useState("");
+  const [firstMax, setFirstMax] = useState("");
   const [addErr, setAddErr] = useState("");
   const [adding, setAdding] = useState(false);
 
-  // 行内编辑：editingId 非空时那一行展开成表单
+  // 供应商行内编辑：editingId 非空时那一家展开成表单
   const [editingId, setEditingId] = useState("");
-  const [editDraft, setEditDraft] = useState<ModelDraft | null>(null);
+  const [editDraft, setEditDraft] = useState<ProviderDraft | null>(null);
   const [editErr, setEditErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // 拉模型列表：按行展开 chips，点一个就把模型名填进编辑草稿
+  // 给某家供应商添加模型：openAddFor 是展开着「添加模型」行的那家 id
+  const [openAddFor, setOpenAddFor] = useState("");
+  const [entryDraft, setEntryDraft] = useState<EntryDraft>(blankEntryDraft);
+  const [entryErr, setEntryErr] = useState("");
+
+  // 条目行内编辑：entryEditId 非空时那一条展开成小表单
+  const [entryEditId, setEntryEditId] = useState("");
+  const [entryEdit, setEntryEdit] = useState<EntryDraft | null>(null);
+
+  // 拉模型列表：chips 展开在对应位置，点了填进对应草稿
   const [listingId, setListingId] = useState("");
   const [listing, setListing] = useState(false);
   const [models, setModels] = useState<Array<{
@@ -1698,8 +1713,9 @@ export function ModelConfigsPanel() {
 
   const load = useCallback(async () => {
     try {
-      const r = await api.modelConfigs();
-      setConfigs(r.configs);
+      const r = await api.modelCatalog();
+      setProviders(r.providers);
+      setEntries(r.entries);
       setKeySecrets(r.keySecrets);
       setErr("");
     } catch (e) {
@@ -1717,20 +1733,22 @@ export function ModelConfigsPanel() {
     setVendorKey(key);
     const v = VENDOR_PRESETS.find((x) => x.key === key);
     if (!v) {
-      setDraft(blankModelDraft());
+      setDraft(blankProviderDraft());
+      setFirstModel("");
+      setFirstMax("");
       return;
     }
-    // 厂商只带出「接哪一家」的部分；模型名不预填，拉取列表后点选
+    // 厂商只带出「接哪一家」的部分；首个模型名不预填，拉取列表后点选
     setDraft({
       name: v.label,
       format: v.format,
       baseUrl: v.baseUrl,
       keySecret: v.keySecret,
-      model: "",
-      maxOutput: String(v.maxOutput),
       maintKeySecret: "",
       maintModel: "",
     });
+    setFirstModel("");
+    setFirstMax(String(v.maxOutput));
   };
   const vendor = VENDOR_PRESETS.find((x) => x.key === vendorKey) || null;
 
@@ -1739,9 +1757,15 @@ export function ModelConfigsPanel() {
     setAdding(true);
     setAddErr("");
     try {
-      await api.modelConfigAdd(modelPayloadOf(draft));
+      await api.modelProviderAdd({
+        ...providerPayloadOf(draft),
+        firstModel: firstModel.trim() || undefined,
+        maxOutput: firstMax.trim() ? Number(firstMax) : undefined,
+      });
       setVendorKey("");
-      setDraft(blankModelDraft());
+      setDraft(blankProviderDraft());
+      setFirstModel("");
+      setFirstMax("");
       await load();
     } catch (e) {
       // 后端校验不过（缺 Key、地址不对之类）原样摆在这里，不翻译
@@ -1751,15 +1775,15 @@ export function ModelConfigsPanel() {
     }
   };
 
-  const startEdit = (c: ModelConfig) => {
-    if (editingId === c.id) {
+  const startEdit = (p: ModelProvider) => {
+    if (editingId === p.id) {
       setEditingId("");
       setEditDraft(null);
       return;
     }
-    setEditingId(c.id);
+    setEditingId(p.id);
     setEditErr("");
-    setEditDraft(modelDraftOf(c));
+    setEditDraft(providerDraftOf(p));
   };
 
   const saveEdit = async () => {
@@ -1767,9 +1791,9 @@ export function ModelConfigsPanel() {
     setBusy(true);
     setEditErr("");
     try {
-      await api.modelConfigPatch({
+      await api.modelProviderPatch({
         id: editingId,
-        ...modelPayloadOf(editDraft),
+        ...providerPayloadOf(editDraft),
       });
       setEditingId("");
       setEditDraft(null);
@@ -1781,17 +1805,23 @@ export function ModelConfigsPanel() {
     }
   };
 
+  const delProvider = async (p: ModelProvider) => {
+    if (!window.confirm(`删掉「${p.name}」？名下的模型条目会一并删除。`))
+      return;
+    await api.modelProviderDelete(p.id).catch((e: Error) => setErr(e.message));
+    await load();
+  };
+
   /** 「设为当前」不需要确认：误点一下，下一轮换回来就是了 */
-  const activate = async (c: ModelConfig) => {
+  const activateEntry = async (e: ModelEntry) => {
     await api
-      .modelConfigPatch({ id: c.id, active: true })
-      .catch((e: Error) => setErr(e.message));
+      .modelEntryPatch({ id: e.id, active: true })
+      .catch((er: Error) => setErr(er.message));
     await load();
   };
 
   /**
-   * 拉模型列表：scope 是配置行 id（已保存的条目）或 ADD_SCOPE（新增表单）。
-   * chips 展开在对应位置，点一个就把模型名填进那份草稿。
+   * 拉模型列表：scope 是供应商 id（已保存的那家）或 ADD_SCOPE（新增表单）。
    * 地址若是某厂商的已知门，就用该厂商标定过的列表端点与鉴权头 ——
    * anthropic 家的兼容门下没有 /models，瞎拼只会白吃一个 404。
    */
@@ -1832,48 +1862,90 @@ export function ModelConfigsPanel() {
     }
   };
 
-  /** 点模型 chip：填进对应草稿的 model 字段；配置行还没展开编辑就先展开 */
-  const pickModel = (scope: string, id: string) => {
+  /** 点模型 chip：新增表单里填「首个模型名」；供应商行里直接挂成条目 */
+  const pickModel = async (scope: string, id: string) => {
     if (scope === ADD_SCOPE) {
-      setDraft((prev) => ({ ...prev, model: id }));
+      setFirstModel(id);
       return;
     }
-    const c = configs.find((x) => x.id === scope);
-    if (!c) return;
-    setEditDraft((prev) => {
-      const base = editingId === scope && prev ? prev : modelDraftOf(c);
-      return { ...base, model: id };
-    });
-    if (editingId !== scope) {
-      setEditingId(scope);
-      setEditErr("");
+    try {
+      await api.modelEntryAdd({ providerId: scope, model: id });
+      setEntryDraft(blankEntryDraft());
+      await load();
+    } catch (e) {
+      setEntryErr((e as Error).message);
     }
   };
 
-  const del = async (c: ModelConfig) => {
-    if (!window.confirm(`删掉「${c.name}」？这条配置会立刻失效。`)) return;
-    await api.modelConfigDelete(c.id).catch((e: Error) => setErr(e.message));
+  /** 给某家挂一个手填的模型条目 */
+  const addEntry = async (providerId: string) => {
+    if (!entryDraft.model.trim()) return;
+    setEntryErr("");
+    try {
+      await api.modelEntryAdd({
+        providerId,
+        model: entryDraft.model.trim(),
+        maxOutput: entryDraft.maxOutput.trim()
+          ? Number(entryDraft.maxOutput)
+          : undefined,
+      });
+      setEntryDraft(blankEntryDraft());
+      await load();
+    } catch (e) {
+      setEntryErr((e as Error).message);
+    }
+  };
+
+  const startEntryEdit = (e: ModelEntry) => {
+    if (entryEditId === e.id) {
+      setEntryEditId("");
+      setEntryEdit(null);
+      return;
+    }
+    setEntryEditId(e.id);
+    setEntryEdit({
+      model: e.model,
+      maxOutput: e.maxOutput ? String(e.maxOutput) : "",
+    });
+  };
+
+  const saveEntryEdit = async () => {
+    if (!entryEdit || !entryEditId) return;
+    try {
+      await api.modelEntryPatch({
+        id: entryEditId,
+        model: entryEdit.model.trim(),
+        maxOutput: entryEdit.maxOutput.trim()
+          ? Number(entryEdit.maxOutput)
+          : undefined,
+      });
+      setEntryEditId("");
+      setEntryEdit(null);
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  const delEntry = async (e: ModelEntry) => {
+    if (!window.confirm(`删掉模型「${e.model}」？`)) return;
+    await api.modelEntryDelete(e.id).catch((er: Error) => setErr(er.message));
     await load();
   };
 
-  /** 新增与编辑共用的字段集，保证两处要填的东西永远一致 */
-  const renderModelFields = (
-    d: ModelDraft,
-    patch: (p: Partial<ModelDraft>) => void,
+  /** 新增与编辑共用的供应商字段集，保证两处要填的东西永远一致 */
+  const renderProviderFields = (
+    d: ProviderDraft,
+    patch: (p: Partial<ProviderDraft>) => void,
+    modelListId?: string,
   ) => (
     <>
       <div className="inline-form">
         <input
           className="field"
-          placeholder="名称"
+          placeholder="供应商名称"
           value={d.name}
           onChange={(e) => patch({ name: e.target.value })}
-        />
-        <input
-          className="field"
-          placeholder="模型名"
-          value={d.model}
-          onChange={(e) => patch({ model: e.target.value })}
         />
         <select
           className="field"
@@ -1907,31 +1979,26 @@ export function ModelConfigsPanel() {
           value={d.keySecret}
           onChange={(e) => patch({ keySecret: e.target.value })}
         />
-        <input
-          className="field"
-          placeholder="输出上限（token，可空）"
-          value={d.maxOutput}
-          onChange={(e) => patch({ maxOutput: e.target.value })}
-        />
+        {/* 常见手误：把 Key 本体当变量名贴进来。取不到值不说，Key 还落了库 */}
+        {/^sk-\S+/.test(d.keySecret.trim()) && (
+          <p className="err">
+            这串像是 Key 本体（sk- 开头）。这一栏填的是 secret 变量名，比如
+            DEEPSEEK_KEY；Key 本体在终端跑 npx wrangler secret put DEEPSEEK_KEY
+            配进这台机器。
+          </p>
+        )}
       </div>
-      {/* 常见手误：把 Key 本体当变量名贴进来。取不到值不说，Key 还落了库 */}
-      {/^sk-\S+/.test(d.keySecret.trim()) && (
-        <p className="err">
-          这串像是 Key 本体（sk- 开头）。这一栏填的是 secret 变量名，比如
-          DEEPSEEK_KEY；Key 本体在终端跑 npx wrangler secret put DEEPSEEK_KEY
-          配进这台机器。
-        </p>
-      )}
       <div className="inline-form">
         <input
           className="field"
           list="mc-key-secrets"
-          placeholder="维护用 Key（留空 = 复用主线）"
+          placeholder="维护用 Key（留空 = 用上面那把）"
           value={d.maintKeySecret}
           onChange={(e) => patch({ maintKeySecret: e.target.value })}
         />
         <input
           className="field"
+          list={modelListId}
           placeholder="维护用模型（留空 = 复用主线）"
           value={d.maintModel}
           onChange={(e) => patch({ maintModel: e.target.value })}
@@ -1946,11 +2013,11 @@ export function ModelConfigsPanel() {
   return (
     <div className="panel-body">
       <p className="meta">
-        一条配置就是一套接模型的钥匙串。标着「载入中」的是普通模式用的那套；
-        换一套上去，下一轮对话生效。两种模式各用哪套，在设置 → 回复风格里指派。
+        一家供应商就是一套接模型的钥匙串，底下想挂几个模型就挂几个；标着「载入中」的是普通模式用的那个，换一个上去，下一轮对话生效。两种模式各用哪个，在设置
+        → 回复风格里指派。
       </p>
 
-      <h3 className="sect">新增配置</h3>
+      <h3 className="sect">新增供应商</h3>
       <div className="inline-form col">
         {addErr && <p className="err">{addErr}</p>}
         <div className="inline-form">
@@ -2015,14 +2082,28 @@ export function ModelConfigsPanel() {
                     </button>
                   ))}
                 </div>
-                <p className="meta">点一个模型名，填进「模型」字段。</p>
+                <p className="meta">点一个模型名，填进「首个模型名」。</p>
               </>
             )}
           </div>
         )}
-        {renderModelFields(draft, (p) =>
+        {renderProviderFields(draft, (p) =>
           setDraft((prev) => ({ ...prev, ...p })),
         )}
+        <div className="inline-form">
+          <input
+            className="field"
+            placeholder="首个模型名（可空，之后再加）"
+            value={firstModel}
+            onChange={(e) => setFirstModel(e.target.value)}
+          />
+          <input
+            className="field"
+            placeholder="输出上限（token，可空）"
+            value={firstMax}
+            onChange={(e) => setFirstMax(e.target.value)}
+          />
+        </div>
         <p className="meta">
           Key 填的是变量名：新厂商先在终端跑 npx wrangler secret put
           DEEPSEEK_KEY 把 Key 配进这台机器，再到这里填变量名
@@ -2039,8 +2120,7 @@ export function ModelConfigsPanel() {
               adding ||
               !draft.name.trim() ||
               !draft.baseUrl.trim() ||
-              !draft.keySecret.trim() ||
-              !draft.model.trim()
+              !draft.keySecret.trim()
             }
           >
             {adding ? "保存中…" : "保存"}
@@ -2048,132 +2128,255 @@ export function ModelConfigsPanel() {
         </div>
       </div>
 
-      <h3 className="sect">配置（{configs.length}）</h3>
+      <h3 className="sect">供应商（{providers.length}）</h3>
       <ul className="remind-list">
-        {configs.map((c) => (
-          <li className="remind-row" key={c.id}>
-            <div className="remind-when">
-              <span style={{ fontWeight: 600 }}>{c.name}</span>
-              <span className="tag">
-                {MODEL_FORMAT_LABEL[c.format] || c.format}
-              </span>
-              {c.active && <span className="tag ok">载入中</span>}
-              <span className="meta">{c.model}</span>
-            </div>
-            <div className="remind-when">
-              <span className="tag ghost">{c.keySecret}</span>
-              {c.maintModel && (
-                <span className="tag ghost">维护 {c.maintModel}</span>
-              )}
-              <span className="meta">输出上限 {c.maxOutput || "默认"}</span>
-            </div>
-
-            <div className="row-actions">
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => startEdit(c)}
-              >
-                {editingId === c.id ? "收起" : "编辑"}
-              </button>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() =>
-                  void pullModels(c.id, c.format, c.baseUrl, c.keySecret)
-                }
-                title="问这一家现在有哪些模型可挑"
-              >
-                {listingId === c.id && listing ? "拉取中…" : "拉取模型列表"}
-              </button>
-              {!c.active && (
-                <>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => void activate(c)}
-                  >
-                    设为当前
-                  </button>
-                  <span className="meta">下一轮对话生效</span>
-                </>
-              )}
-              <button
-                className="btn btn-danger btn-sm"
-                onClick={() => void del(c)}
-              >
-                删除
-              </button>
-            </div>
-
-            {listingId === c.id && (
-              <div className="panel-body">
-                {listErr && <p className="err">{listErr}</p>}
-                {listing && <p className="empty-sm">拉取中…</p>}
-                {models && !listing && !models.length && !listErr && (
-                  <p className="empty-sm">
-                    这一家没回模型清单 —— Key 或地址可能不对。
-                  </p>
+        {providers.map((p) => {
+          const mine = entries.filter((x) => x.providerId === p.id);
+          return (
+            <li className="remind-row" key={p.id}>
+              <div className="remind-when">
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span className="tag">
+                  {MODEL_FORMAT_LABEL[p.format] || p.format}
+                </span>
+                <span className="tag ghost">{p.keySecret}</span>
+                {p.maintModel && (
+                  <span className="meta">维护 {p.maintModel}</span>
                 )}
-                {!!models?.length && (
-                  <>
-                    <div className="tabs">
-                      {models.map((m) => (
+              </div>
+              <div className="remind-when">
+                <span className="meta">{p.baseUrl}</span>
+              </div>
+
+              <div className="row-actions">
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => startEdit(p)}
+                >
+                  {editingId === p.id ? "收起" : "编辑"}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setOpenAddFor(openAddFor === p.id ? "" : p.id);
+                    setEntryDraft(blankEntryDraft());
+                    setEntryErr("");
+                    if (openAddFor !== p.id)
+                      void pullModels(p.id, p.format, p.baseUrl, p.keySecret);
+                  }}
+                  title="问这一家现在有哪些模型可挑"
+                >
+                  {listingId === p.id && listing ? "拉取中…" : "添加模型"}
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={() => void delProvider(p)}
+                >
+                  删除
+                </button>
+              </div>
+
+              {/* 模型条目：这一家挂着的所有模型，点谁「设为当前」谁上线 */}
+              {mine.length > 0 && (
+                <ul className="remind-list">
+                  {mine.map((e) => (
+                    <li className="remind-row" key={e.id}>
+                      <div className="remind-when">
+                        <span style={{ fontWeight: 600 }}>{e.model}</span>
+                        {e.active && <span className="tag ok">载入中</span>}
+                        <span className="meta">
+                          输出上限 {e.maxOutput || "默认"}
+                        </span>
+                      </div>
+                      <div className="row-actions">
+                        {!e.active && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => void activateEntry(e)}
+                          >
+                            设为当前
+                          </button>
+                        )}
                         <button
-                          key={m.id}
-                          className="chip"
-                          title={m.name && m.name !== m.id ? m.name : undefined}
-                          onClick={() => pickModel(c.id, m.id)}
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => startEntryEdit(e)}
                         >
-                          {m.id}
+                          {entryEditId === e.id ? "收起" : "编辑"}
                         </button>
-                      ))}
-                    </div>
-                    <p className="meta">
-                      点一个模型名，填进这一条的「模型」字段。
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => void delEntry(e)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                      {entryEditId === e.id && entryEdit && (
+                        <div className="panel-body">
+                          <div className="inline-form">
+                            <input
+                              className="field"
+                              placeholder="模型名"
+                              value={entryEdit.model}
+                              onChange={(ev) =>
+                                setEntryEdit({
+                                  ...entryEdit,
+                                  model: ev.target.value,
+                                })
+                              }
+                            />
+                            <input
+                              className="field"
+                              placeholder="输出上限（token，可空）"
+                              value={entryEdit.maxOutput}
+                              onChange={(ev) =>
+                                setEntryEdit({
+                                  ...entryEdit,
+                                  maxOutput: ev.target.value,
+                                })
+                              }
+                            />
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => void saveEntryEdit()}
+                            >
+                              保存
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {mine.length === 0 && (
+                <p className="empty-sm">
+                  这家还没挂模型 —— 点「添加模型」拉列表挑，或者手填一个。
+                </p>
+              )}
 
-            {editingId === c.id && editDraft && (
-              <div className="panel-body">
-                {editErr && <p className="err">{editErr}</p>}
-                {renderModelFields(editDraft, (p) =>
-                  setEditDraft((prev) => (prev ? { ...prev, ...p } : prev)),
-                )}
-                <div className="inline-form">
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={saveEdit}
-                    disabled={
-                      busy ||
-                      !editDraft.name.trim() ||
-                      !editDraft.baseUrl.trim() ||
-                      !editDraft.keySecret.trim() ||
-                      !editDraft.model.trim()
-                    }
-                  >
-                    保存
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      setEditingId("");
-                      setEditDraft(null);
-                    }}
-                  >
-                    取消
-                  </button>
+              {/* 添加模型行：手填模型名，或点上面拉回来的 chips */}
+              {openAddFor === p.id && (
+                <div className="panel-body">
+                  {entryErr && <p className="err">{entryErr}</p>}
+                  {listing && <p className="empty-sm">拉取中…</p>}
+                  {listErr && listingId === p.id && (
+                    <p className="err">{listErr}</p>
+                  )}
+                  {models && !listing && !models.length && !listErr && (
+                    <p className="empty-sm">
+                      这一家没回模型清单 —— Key 或地址可能不对。
+                    </p>
+                  )}
+                  {!!models?.length && (
+                    <>
+                      <div className="tabs">
+                        {models.map((m) => (
+                          <button
+                            key={m.id}
+                            className="chip"
+                            title={
+                              m.name && m.name !== m.id ? m.name : undefined
+                            }
+                            onClick={() => void pickModel(p.id, m.id)}
+                          >
+                            {m.id}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="meta">
+                        点一个模型名，直接挂进这一家；也可以在下面手填。
+                      </p>
+                    </>
+                  )}
+                  <div className="inline-form">
+                    <input
+                      className="field"
+                      placeholder="模型名"
+                      value={entryDraft.model}
+                      onChange={(ev) =>
+                        setEntryDraft({
+                          ...entryDraft,
+                          model: ev.target.value,
+                        })
+                      }
+                    />
+                    <input
+                      className="field"
+                      placeholder="输出上限（token，可空）"
+                      value={entryDraft.maxOutput}
+                      onChange={(ev) =>
+                        setEntryDraft({
+                          ...entryDraft,
+                          maxOutput: ev.target.value,
+                        })
+                      }
+                    />
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={!entryDraft.model.trim()}
+                      onClick={() => void addEntry(p.id)}
+                    >
+                      添加
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </li>
-        ))}
+              )}
+
+              {editingId === p.id && editDraft && (
+                <div className="panel-body">
+                  {editErr && <p className="err">{editErr}</p>}
+                  {renderProviderFields(
+                    editDraft,
+                    (patch) =>
+                      setEditDraft((prev) =>
+                        prev ? { ...prev, ...patch } : prev,
+                      ),
+                    `mm-${p.id}`,
+                  )}
+                  <p className="meta">
+                    维护用模型从这一家挂着的模型里挑（往下看有清单），留空就跟着主线走。
+                  </p>
+                  <div className="inline-form">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={saveEdit}
+                      disabled={
+                        busy ||
+                        !editDraft.name.trim() ||
+                        !editDraft.baseUrl.trim() ||
+                        !editDraft.keySecret.trim()
+                      }
+                    >
+                      保存
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setEditingId("");
+                        setEditDraft(null);
+                      }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 维护用模型的下拉选项：这一家自己的模型条目 */}
+              <datalist id={`mm-${p.id}`}>
+                {mine.map((e) => (
+                  <option key={e.id} value={e.model} />
+                ))}
+              </datalist>
+            </li>
+          );
+        })}
       </ul>
 
       {loading && <p className="empty-sm">读取中…</p>}
-      {!loading && !configs.length && !err && (
+      {!loading && !providers.length && !err && (
         <p className="empty-sm">
-          还没有配置。从上面的厂商挑一家起头，拉模型列表点选后保存；空白新建也行。
+          还没有供应商。从上面的厂商挑一家起头，拉模型列表点选后保存；空白新建也行。
         </p>
       )}
 

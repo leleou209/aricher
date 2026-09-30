@@ -1,14 +1,18 @@
-// model_configs：模型厂商配置目录。
+// 模型目录：供应商（model_providers）与模型条目（model_entries）两级。
 //
 // 以前主线模型只认 Worker secrets 那一套（API_ENDPOINT + API_KEY + API_MODEL），
-// 换一家厂商得改配置重新部署。这张表把「用哪家、什么协议、去哪个门」变成数据：
-// 管理员在面板上添几条配置、点名哪条生效（active），对话主循环按生效那条建模。
+// 换一家厂商得改配置重新部署。这张目录把「用哪家、什么协议、去哪个门」变成数据：
+// 管理员在面板上添供应商（名称、格式、地址、Key 变量名），一家底下挂几个模型条目，
+// 点名哪个条目生效（active）—— 同一家供应商的多模型自由切换，不用重复填地址和 Key。
 //
 // 表只建在主人那间 —— 和 guest_types 一样，这是这张台子的配置，
-// 不是哪位来客的私物；来客那间隔着 DO 读得到生效那条（里面本来就没有 key 本体）。
+// 不是哪位来客的私物；来客那间隔着 DO 读得到生效那组（里面本来就没有 key 本体）。
 //
 // 红线：keySecret 存的是 Worker secret 的**变量名**（如 "DEEPSEEK_KEY"），
-// key 本体只活在 secrets 里，绝不落库 —— 所以这张表可以整表回显给面板。
+// key 本体只活在 secrets 里，绝不落库 —— 所以这两张表可以整表回显给面板。
+//
+// 「名称」就是供应商名称：一家供应商一条，不再有「配置名 vs 模型名」的二义性。
+// 维护用 Key 与维护用模型都挂在供应商级 —— 后台小活走哪家的小模型，是这家的事。
 
 import type { SqlTag } from "./state";
 
@@ -21,57 +25,83 @@ export const MODEL_FORMATS: ModelFormat[] = [
   "openai-responses",
 ];
 
-export interface ModelConfig {
+/** 一家供应商：接哪一家的钥匙串。模型条目挂它底下 */
+export interface ModelProvider {
   id: string;
+  /** 供应商名称（就是界面上的「名称」） */
   name: string;
   format: ModelFormat;
   baseUrl: string;
   /** Worker secret 的变量名（如 "DEEPSEEK_KEY"），不是 key 本体 */
   keySecret: string;
-  model: string;
-  maxOutput: number;
-  /** 维护模型单独走哪把 key；空 = 复用主线那把 */
+  /** 维护模型单独走哪把 key；空 = 用本家 keySecret 那把 */
   maintKeySecret: string;
-  /** 维护模型用哪个模型名；空 = 复用主线那个 */
+  /** 维护模型用哪个模型名；空 = 复用当前生效的主线模型 */
   maintModel: string;
-  active: boolean;
+  created: string;
 }
 
-interface ModelRow {
+/** 一个模型条目：某家供应商底下的一个可用模型。全库最多一条 active */
+export interface ModelEntry {
+  id: string;
+  providerId: string;
+  model: string;
+  maxOutput: number;
+  active: boolean;
+  created: string;
+}
+
+/** 生效中的一组：条目 + 它挂在哪家底下（建模要两样拼一起才完整） */
+export interface ActiveCatalog {
+  entry: ModelEntry;
+  provider: ModelProvider;
+}
+
+interface ProviderRow {
   id: string;
   name: string;
   format: string;
   base_url: string;
   key_secret: string;
-  model: string;
-  max_output: number;
   maint_key_secret: string;
   maint_model: string;
+  created: string;
+}
+
+interface EntryRow {
+  id: string;
+  provider_id: string;
+  model: string;
+  max_output: number;
   active: number | boolean;
   created: string;
 }
 
-export interface ModelConfigInput {
+export interface ModelProviderInput {
   name: string;
   format: string;
   baseUrl: string;
   keySecret: string;
-  model: string;
-  maxOutput?: number;
   maintKeySecret?: string;
   maintModel?: string;
+  /** 新建供应商时顺手挂的首个模型；空就只建供应商，模型之后再加 */
+  firstModel?: string;
+  maxOutput?: number;
 }
 
-/** 改配置的入参：字段缺省（undefined）不动 */
-export interface ModelConfigPatch {
+/** 改供应商的入参：字段缺省（undefined）不动 */
+export interface ModelProviderPatch {
   name?: string;
   format?: string;
   baseUrl?: string;
   keySecret?: string;
-  model?: string;
-  maxOutput?: number;
   maintKeySecret?: string;
   maintModel?: string;
+}
+
+export interface ModelEntryPatch {
+  model?: string;
+  maxOutput?: number;
   active?: boolean;
 }
 
@@ -80,18 +110,27 @@ function toBool(v: number | boolean): boolean {
   return v === 1 || v === true;
 }
 
-function rowToConfig(r: ModelRow): ModelConfig {
+function rowToProvider(r: ProviderRow): ModelProvider {
   return {
     id: r.id,
     name: r.name,
     format: r.format as ModelFormat,
     baseUrl: r.base_url,
     keySecret: r.key_secret,
-    model: r.model,
-    maxOutput: Number(r.max_output),
     maintKeySecret: r.maint_key_secret,
     maintModel: r.maint_model,
+    created: r.created,
+  };
+}
+
+function rowToEntry(r: EntryRow): ModelEntry {
+  return {
+    id: r.id,
+    providerId: r.provider_id,
+    model: r.model,
+    maxOutput: Number(r.max_output),
     active: toBool(r.active),
+    created: r.created,
   };
 }
 
@@ -112,118 +151,155 @@ export function toMaxOutput(v: unknown): number {
   return Number.isInteger(n) && n > 0 ? n : 32768;
 }
 
-export function ensureModelConfigsSchema(sql: SqlTag): void {
-  sql`CREATE TABLE IF NOT EXISTS model_configs (
+// ── 老单表（model_configs）→ 两级的惰性迁移 ─────────────────
+// 老结构一条配置 = 一家供应商 + 一个模型，拆不开多模型。启动时瞄一眼：
+// 老表还在就逐行搬成「一家供应商 + 一条模型条目」，条目 id 沿用老配置 id
+// —— 深度思考槽位（state.deepConfigId）指着这些 id，换了形状不能断了指向。
+// 搬完老表改名留底，下一次启动就当它不存在。
+
+interface LegacyRow {
+  id: string;
+  name: string;
+  format: string;
+  base_url: string;
+  key_secret: string;
+  model: string;
+  max_output: number;
+  maint_key_secret: string;
+  maint_model: string;
+  active: number | boolean;
+  created: string;
+}
+
+function migrateLegacyConfigs(sql: SqlTag): void {
+  const tables = sql<{ name: string }>`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_configs'`;
+  if (!tables.length) return;
+  const legacy = sql<LegacyRow>`
+    SELECT id, name, format, base_url, key_secret, model, max_output,
+           maint_key_secret, maint_model, active, created FROM model_configs`;
+  for (const row of legacy) {
+    const providerId = crypto.randomUUID().slice(0, 8);
+    sql`INSERT INTO model_providers (id, name, format, base_url, key_secret,
+              maint_key_secret, maint_model, created)
+        VALUES (${providerId}, ${row.name}, ${row.format}, ${row.base_url},
+                ${row.key_secret}, ${row.maint_key_secret}, ${row.maint_model},
+                ${row.created})`;
+    sql`INSERT INTO model_entries (id, provider_id, model, max_output, active, created)
+        VALUES (${row.id}, ${providerId}, ${row.model},
+                ${toMaxOutput(row.max_output)},
+                ${toBool(row.active) ? 1 : 0}, ${row.created})`;
+  }
+  // 历史脏数据兜底：active 理论上最多一条，真有多条就留最早那笔
+  const actives = sql<EntryRow>`
+    SELECT id, provider_id, model, max_output, active, created
+    FROM model_entries WHERE active = 1 ORDER BY created`;
+  for (const row of actives.slice(1))
+    sql`UPDATE model_entries SET active = 0 WHERE id = ${row.id}`;
+  sql`ALTER TABLE model_configs RENAME TO model_configs_migrated`;
+}
+
+export function ensureModelCatalogSchema(sql: SqlTag): void {
+  sql`CREATE TABLE IF NOT EXISTS model_providers (
        id               TEXT PRIMARY KEY,
        name             TEXT NOT NULL,
        format           TEXT NOT NULL,
        base_url         TEXT NOT NULL,
        key_secret       TEXT NOT NULL,
-       model            TEXT NOT NULL,
-       max_output       INTEGER DEFAULT 32768,
        maint_key_secret TEXT DEFAULT '',
        maint_model      TEXT DEFAULT '',
-       active           INTEGER DEFAULT 0,
        created          TEXT
      )`;
-  // 深度思考的指向曾在这张表上（deep_config_id 列），后来挪进了主人房的
-  // state（回复风格页按模式指派）。老实例把列卸掉，新实例本就没有 —— 都不炸
-  try {
-    sql`ALTER TABLE model_configs DROP COLUMN deep_config_id`;
-  } catch {
-    /* 列不存在 */
-  }
+  sql`CREATE TABLE IF NOT EXISTS model_entries (
+       id          TEXT PRIMARY KEY,
+       provider_id TEXT NOT NULL,
+       model       TEXT NOT NULL,
+       max_output  INTEGER DEFAULT 32768,
+       active      INTEGER DEFAULT 0,
+       created     TEXT
+     )`;
+  migrateLegacyConfigs(sql);
 }
 
-function configById(sql: SqlTag, id: string): ModelConfig | null {
-  const rows = sql<ModelRow>`
-    SELECT id, name, format, base_url, key_secret, model, max_output,
-           maint_key_secret, maint_model, active, created
-    FROM model_configs WHERE id = ${id}`;
-  return rows.length ? rowToConfig(rows[0]) : null;
+// ── 供应商 ──────────────────────────────────────────────────
+
+function providerById(sql: SqlTag, id: string): ModelProvider | null {
+  const rows = sql<ProviderRow>`
+    SELECT id, name, format, base_url, key_secret,
+           maint_key_secret, maint_model, created
+    FROM model_providers WHERE id = ${id}`;
+  return rows.length ? rowToProvider(rows[0]) : null;
 }
 
-/** 按 id 取一条。深度思考槽位（state.deepConfigId）解析时用。 */
-export function getConfigById(sql: SqlTag, id: string): ModelConfig | null {
-  ensureModelConfigsSchema(sql);
-  return configById(sql, id);
+export function getProviderById(sql: SqlTag, id: string): ModelProvider | null {
+  ensureModelCatalogSchema(sql);
+  return providerById(sql, id);
 }
 
-/** 全部配置，旧的在前（created 序）。「顺序」本身没有语义，生效只看 active。 */
-export function listModelConfigs(sql: SqlTag): ModelConfig[] {
-  ensureModelConfigsSchema(sql);
-  return sql<ModelRow>`
-    SELECT id, name, format, base_url, key_secret, model, max_output,
-           maint_key_secret, maint_model, active, created
-    FROM model_configs ORDER BY created`.map(rowToConfig);
+/** 全部供应商，旧的在前（created 序） */
+export function listModelProviders(sql: SqlTag): ModelProvider[] {
+  ensureModelCatalogSchema(sql);
+  return sql<ProviderRow>`
+    SELECT id, name, format, base_url, key_secret,
+           maint_key_secret, maint_model, created
+    FROM model_providers ORDER BY created`.map(rowToProvider);
 }
 
-/** 生效中的那条。activateModelConfig 保证了最多只有一条，取最早那笔兜底。 */
-export function getActiveModelConfig(sql: SqlTag): ModelConfig | null {
-  ensureModelConfigsSchema(sql);
-  const rows = sql<ModelRow>`
-    SELECT id, name, format, base_url, key_secret, model, max_output,
-           maint_key_secret, maint_model, active, created
-    FROM model_configs WHERE active = 1 ORDER BY created`;
-  return rows.length ? rowToConfig(rows[0]) : null;
-}
-
-/**
- * 新建一条。首个条目自动生效 —— 空目录建出第一条却还得手动点「启用」，
- * 是一段没人需要的「请先配置配置」死循环。
- */
-export function createModelConfig(
+/** 新建一家供应商。firstModel 给了就顺手挂上首个模型条目 */
+export function createModelProvider(
   sql: SqlTag,
-  input: ModelConfigInput,
-): ModelConfig {
-  ensureModelConfigsSchema(sql);
+  input: ModelProviderInput,
+): { provider: ModelProvider; entry: ModelEntry | null } {
+  ensureModelCatalogSchema(sql);
   const name = (input.name || "").trim().slice(0, 60);
   const format = (input.format || "").trim();
   const baseUrl = (input.baseUrl || "").trim().slice(0, 300);
   const keySecret = (input.keySecret || "").trim().slice(0, 80);
-  const model = (input.model || "").trim().slice(0, 120);
-  if (!name) throw new Error("模型配置的名称不能为空");
+  if (!name) throw new Error("供应商名称不能为空");
   if (!format) throw new Error("接口格式（format）不能为空");
   assertFormat(format);
   if (!baseUrl) throw new Error("接口地址（baseUrl）不能为空");
   if (!keySecret) throw new Error("存 key 的 secret 名（keySecret）不能为空");
-  if (!model) throw new Error("模型名（model）不能为空");
-  const first = listModelConfigs(sql).length === 0;
-  const row: ModelRow = {
+  const provider: ModelProvider = {
     id: crypto.randomUUID().slice(0, 8),
     name,
-    format,
-    base_url: baseUrl,
-    key_secret: keySecret,
-    model,
-    max_output: toMaxOutput(input.maxOutput),
-    maint_key_secret: (input.maintKeySecret || "").trim().slice(0, 80),
-    maint_model: (input.maintModel || "").trim().slice(0, 120),
-    active: first ? 1 : 0,
+    format: format as ModelFormat,
+    baseUrl,
+    keySecret,
+    maintKeySecret: (input.maintKeySecret || "").trim().slice(0, 80),
+    maintModel: (input.maintModel || "").trim().slice(0, 120),
     created: new Date().toISOString(),
   };
-  sql`INSERT INTO model_configs (id, name, format, base_url, key_secret,
-            model, max_output, maint_key_secret, maint_model, active, created)
-      VALUES (${row.id}, ${row.name}, ${row.format}, ${row.base_url},
-              ${row.key_secret}, ${row.model}, ${row.max_output},
-              ${row.maint_key_secret}, ${row.maint_model}, ${row.active},
-              ${row.created})`;
-  return rowToConfig(row);
+  sql`INSERT INTO model_providers (id, name, format, base_url, key_secret,
+            maint_key_secret, maint_model, created)
+      VALUES (${provider.id}, ${provider.name}, ${provider.format},
+              ${provider.baseUrl}, ${provider.keySecret},
+              ${provider.maintKeySecret}, ${provider.maintModel},
+              ${provider.created})`;
+  const firstModel = (input.firstModel || "").trim().slice(0, 120);
+  const entry = firstModel
+    ? createModelEntry(sql, {
+        providerId: provider.id,
+        model: firstModel,
+        maxOutput: input.maxOutput,
+      })
+    : null;
+  return { provider, entry };
 }
 
-export function updateModelConfig(
+export function updateModelProvider(
   sql: SqlTag,
   id: string,
-  patch: ModelConfigPatch,
-): ModelConfig | null {
-  ensureModelConfigsSchema(sql);
-  const cur = configById(sql, id);
+  patch: ModelProviderPatch,
+): ModelProvider | null {
+  ensureModelCatalogSchema(sql);
+  const cur = providerById(sql, id);
   if (!cur) return null;
   const name =
     patch.name === undefined
       ? cur.name
       : String(patch.name).trim().slice(0, 60);
-  if (!name) throw new Error("模型配置的名称不能为空");
+  if (!name) throw new Error("供应商名称不能为空");
   let format: string = cur.format;
   if (patch.format !== undefined) {
     format = String(patch.format).trim();
@@ -240,16 +316,8 @@ export function updateModelConfig(
       ? cur.keySecret
       : String(patch.keySecret).trim().slice(0, 80);
   if (!keySecret) throw new Error("存 key 的 secret 名（keySecret）不能为空");
-  const model =
-    patch.model === undefined
-      ? cur.model
-      : String(patch.model).trim().slice(0, 120);
-  if (!model) throw new Error("模型名（model）不能为空");
-  sql`UPDATE model_configs SET name = ${name}, format = ${format},
-        base_url = ${baseUrl}, key_secret = ${keySecret}, model = ${model},
-        max_output = ${toMaxOutput(
-          patch.maxOutput === undefined ? cur.maxOutput : patch.maxOutput,
-        )},
+  sql`UPDATE model_providers SET name = ${name}, format = ${format},
+        base_url = ${baseUrl}, key_secret = ${keySecret},
         maint_key_secret = ${
           patch.maintKeySecret === undefined
             ? cur.maintKeySecret
@@ -259,30 +327,135 @@ export function updateModelConfig(
           patch.maintModel === undefined
             ? cur.maintModel
             : String(patch.maintModel).trim().slice(0, 120)
-        },
-        active = ${patch.active === undefined ? toBoolFrom(cur.active) : patch.active ? 1 : 0}
+        }
       WHERE id = ${id}`;
-  return configById(sql, id);
+  return providerById(sql, id);
 }
 
-/** 布尔入 SQL 前归一；写在上面那句话太挤，拆出来 */
-function toBoolFrom(v: number | boolean): number {
-  return toBool(v) ? 1 : 0;
+/**
+ * 删一家供应商，连同它名下的模型条目。
+ * 名下有生效条目时，把剩下最新的另一家的条目顶上来 —— 目录永远要有一个可用项，
+ * 否则「删一家旧供应商」这个无害动作会让整台机器退回 secrets 链，没人知道为什么。
+ */
+export function removeModelProvider(sql: SqlTag, id: string): boolean {
+  ensureModelCatalogSchema(sql);
+  const rows = sql<{ id: string }>`
+    SELECT id FROM model_providers WHERE id = ${id}`;
+  if (!rows.length) return false;
+  const hadActive = sql<EntryRow>`
+    SELECT id, provider_id, model, max_output, active, created
+    FROM model_entries WHERE provider_id = ${id} AND active = 1`.some((r) =>
+    toBool(r.active),
+  );
+  sql`DELETE FROM model_entries WHERE provider_id = ${id}`;
+  sql`DELETE FROM model_providers WHERE id = ${id}`;
+  if (hadActive) promoteLatestEntry(sql);
+  return true;
 }
 
-export function removeModelConfig(sql: SqlTag, id: string): boolean {
-  ensureModelConfigsSchema(sql);
-  const rows = sql<{ id: string; active: number | boolean }>`
-    SELECT id, active FROM model_configs WHERE id = ${id}`;
+// ── 模型条目 ────────────────────────────────────────────────
+
+function entryById(sql: SqlTag, id: string): ModelEntry | null {
+  const rows = sql<EntryRow>`
+    SELECT id, provider_id, model, max_output, active, created
+    FROM model_entries WHERE id = ${id}`;
+  return rows.length ? rowToEntry(rows[0]) : null;
+}
+
+export function getModelEntryById(sql: SqlTag, id: string): ModelEntry | null {
+  ensureModelCatalogSchema(sql);
+  return entryById(sql, id);
+}
+
+/** 全部模型条目，旧的在前。归属哪家看 providerId */
+export function listModelEntries(sql: SqlTag): ModelEntry[] {
+  ensureModelCatalogSchema(sql);
+  return sql<EntryRow>`
+    SELECT id, provider_id, model, max_output, active, created
+    FROM model_entries ORDER BY created`.map(rowToEntry);
+}
+
+/** 生效中的那条。activateModelEntry 保证了最多只有一条，取最早那笔兜底。 */
+export function getActiveModelEntry(sql: SqlTag): ModelEntry | null {
+  ensureModelCatalogSchema(sql);
+  const rows = sql<EntryRow>`
+    SELECT id, provider_id, model, max_output, active, created
+    FROM model_entries WHERE active = 1 ORDER BY created`;
+  return rows.length ? rowToEntry(rows[0]) : null;
+}
+
+/** 删掉/换掉生效条目后的顶替：把剩下最新的那条顶上，目录不空转 */
+function promoteLatestEntry(sql: SqlTag): void {
+  const rest = listModelEntries(sql);
+  if (rest.length) activateModelEntry(sql, rest[rest.length - 1].id);
+}
+
+/**
+ * 新建一个模型条目。全库还没有生效条目时自动生效 ——
+ * 空目录建出第一条却还得手动点「启用」，是段没人需要的「请先配置配置」死循环。
+ */
+export function createModelEntry(
+  sql: SqlTag,
+  input: { providerId: string; model: string; maxOutput?: number },
+): ModelEntry {
+  ensureModelCatalogSchema(sql);
+  const model = (input.model || "").trim().slice(0, 120);
+  if (!model) throw new Error("模型名（model）不能为空");
+  const provider = providerById(sql, input.providerId);
+  if (!provider) throw new Error("供应商不存在，先把这家供应商建好");
+  const noActive = getActiveModelEntry(sql) === null;
+  const row: EntryRow = {
+    id: crypto.randomUUID().slice(0, 8),
+    provider_id: input.providerId,
+    model,
+    max_output: toMaxOutput(input.maxOutput),
+    active: noActive ? 1 : 0,
+    created: new Date().toISOString(),
+  };
+  sql`INSERT INTO model_entries (id, provider_id, model, max_output, active, created)
+      VALUES (${row.id}, ${row.provider_id}, ${row.model}, ${row.max_output},
+              ${row.active}, ${row.created})`;
+  return rowToEntry(row);
+}
+
+export function updateModelEntry(
+  sql: SqlTag,
+  id: string,
+  patch: ModelEntryPatch,
+): ModelEntry | null {
+  ensureModelCatalogSchema(sql);
+  const cur = entryById(sql, id);
+  if (!cur) return null;
+  if (patch.model !== undefined) {
+    const model = String(patch.model).trim().slice(0, 120);
+    if (!model) throw new Error("模型名（model）不能为空");
+  }
+  const next: ModelEntry = {
+    ...cur,
+    model:
+      patch.model === undefined
+        ? cur.model
+        : String(patch.model).trim().slice(0, 120),
+    maxOutput:
+      patch.maxOutput === undefined
+        ? cur.maxOutput
+        : toMaxOutput(patch.maxOutput),
+    active: patch.active === undefined ? cur.active : patch.active,
+  };
+  sql`UPDATE model_entries SET model = ${next.model},
+        max_output = ${next.maxOutput}, active = ${next.active ? 1 : 0}
+      WHERE id = ${id}`;
+  return entryById(sql, id);
+}
+
+export function removeModelEntry(sql: SqlTag, id: string): boolean {
+  ensureModelCatalogSchema(sql);
+  const rows = sql<{ active: number | boolean }>`
+    SELECT active FROM model_entries WHERE id = ${id}`;
   if (!rows.length) return false;
   const wasActive = toBool(rows[0].active);
-  sql`DELETE FROM model_configs WHERE id = ${id}`;
-  if (wasActive) {
-    // 删的是生效那条：把剩下最新的顶上来 —— 目录永远要有一个可用项，
-    // 否则「删一条旧配置」这个无害动作会让整台机器退回 secrets 链，没人知道为什么。
-    const rest = listModelConfigs(sql);
-    if (rest.length) activateModelConfig(sql, rest[rest.length - 1].id);
-  }
+  sql`DELETE FROM model_entries WHERE id = ${id}`;
+  if (wasActive) promoteLatestEntry(sql);
   return true;
 }
 
@@ -290,13 +463,28 @@ export function removeModelConfig(sql: SqlTag, id: string): boolean {
  * 点名生效，先全清再置一。两条 UPDATE 顺序执行即可 ——
  * DO 单线程处理请求，这两句之间不会插进别的写入，等价于事务。
  */
-export function activateModelConfig(
-  sql: SqlTag,
-  id: string,
-): ModelConfig | null {
-  ensureModelConfigsSchema(sql);
-  if (!configById(sql, id)) return null;
-  sql`UPDATE model_configs SET active = 0`;
-  sql`UPDATE model_configs SET active = 1 WHERE id = ${id}`;
-  return configById(sql, id);
+export function activateModelEntry(sql: SqlTag, id: string): ModelEntry | null {
+  ensureModelCatalogSchema(sql);
+  if (!entryById(sql, id)) return null;
+  sql`UPDATE model_entries SET active = 0`;
+  sql`UPDATE model_entries SET active = 1 WHERE id = ${id}`;
+  return entryById(sql, id);
+}
+
+/** 生效中的一组：条目 + 它挂在哪家底下。没有生效条目或供应商被删干净了返回 null */
+export function getActiveCatalog(sql: SqlTag): ActiveCatalog | null {
+  ensureModelCatalogSchema(sql);
+  const entry = getActiveModelEntry(sql);
+  if (!entry) return null;
+  const provider = providerById(sql, entry.providerId);
+  return provider ? { entry, provider } : null;
+}
+
+/** 按 id 取一组（深度思考槽位解析用）。条目或它家的供应商没了都算失效 */
+export function getCatalogById(sql: SqlTag, id: string): ActiveCatalog | null {
+  ensureModelCatalogSchema(sql);
+  const entry = entryById(sql, id);
+  if (!entry) return null;
+  const provider = providerById(sql, entry.providerId);
+  return provider ? { entry, provider } : null;
 }

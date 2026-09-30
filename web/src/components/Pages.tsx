@@ -7,7 +7,12 @@ import {
   type ReactNode,
 } from "react";
 import { api, type Role } from "../lib/api";
-import type { ModelConfig, ThemeKey, UserCard } from "../lib/types";
+import type {
+  ModelEntry,
+  ModelProvider,
+  ThemeKey,
+  UserCard,
+} from "../lib/types";
 import { Icon, type IconName } from "./Icons";
 import {
   ContactPanel,
@@ -807,9 +812,9 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
 };
 
 /**
- * 模式指派：把配置目录里的套组分给「普通模式」和「深度思考」两个槽位。
- * 普通 = 载入中的那套（activate 语义）；深度 = state.deepConfigId，
- * 空着表示跟普通同一套。删掉的套目会自动从槽位上摘下来（后端兜底）。
+ * 模式指派：把模型目录里的条目分给「普通模式」和「深度思考」两个槽位。
+ * 普通 = 载入中的那个条目（activate 语义）；深度 = state.deepConfigId，
+ * 空着表示跟普通同一个。删掉的条目会自动从槽位上摘下来（后端兜底）。
  */
 function StyleAssign({
   deepConfigId,
@@ -818,41 +823,51 @@ function StyleAssign({
   deepConfigId: string;
   patch: (p: { deepConfigId?: string }) => void;
 }) {
-  const [configs, setConfigs] = useState<ModelConfig[] | null>(null);
+  const [catalog, setCatalog] = useState<{
+    providers: ModelProvider[];
+    entries: ModelEntry[];
+  } | null>(null);
 
   useEffect(() => {
     void api
-      .modelConfigs()
-      .then((r) => setConfigs(r.configs))
-      .catch(() => setConfigs([]));
+      .modelCatalog()
+      .then((r) => setCatalog({ providers: r.providers, entries: r.entries }))
+      .catch(() => setCatalog({ providers: [], entries: [] }));
   }, []);
 
-  if (configs === null) return <p className="meta">配置目录读取中…</p>;
-  const active = configs.find((c) => c.active) || null;
+  if (catalog === null) return <p className="meta">模型目录读取中…</p>;
+  const { providers, entries } = catalog;
+  const labelOf = (e: ModelEntry) => {
+    const p = providers.find((x) => x.id === e.providerId);
+    return `${p ? p.name : "未知供应商"}（${e.model}）`;
+  };
+  const active = entries.find((e) => e.active) || null;
 
   return (
     <div className="style-assign">
       <p className="card-desc">
-        两种模式各用哪套模型，从这里指派；换完下一轮对话生效。
+        两种模式各用哪个模型，从这里指派；换完下一轮对话生效。
       </p>
       <div className="style-assign-row">
         <span className="meta">普通模式用</span>
         <select
           className="field"
           value={active?.id ?? ""}
-          disabled={!configs.length}
+          disabled={!entries.length}
           onChange={(e) => {
             void api
-              .modelConfigPatch({ id: e.target.value, active: true })
-              .then(() => api.modelConfigs())
-              .then((r) => setConfigs(r.configs))
+              .modelEntryPatch({ id: e.target.value, active: true })
+              .then(() => api.modelCatalog())
+              .then((r) =>
+                setCatalog({ providers: r.providers, entries: r.entries }),
+              )
               .catch(() => undefined);
           }}
         >
-          {!configs.length && <option value="">目录还是空的</option>}
-          {configs.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}（{c.model}）
+          {!entries.length && <option value="">目录还是空的</option>}
+          {entries.map((e) => (
+            <option key={e.id} value={e.id}>
+              {labelOf(e)}
             </option>
           ))}
         </select>
@@ -862,19 +877,21 @@ function StyleAssign({
         <select
           className="field"
           value={deepConfigId}
-          disabled={!configs.length}
+          disabled={!entries.length}
           onChange={(e) => patch({ deepConfigId: e.target.value })}
         >
           <option value="">跟普通模式同一套</option>
-          {configs.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}（{c.model}）
+          {entries.map((e) => (
+            <option key={e.id} value={e.id}>
+              {labelOf(e)}
             </option>
           ))}
         </select>
       </div>
-      {!configs.length && (
-        <p className="meta">先到「数据 → 模型配置」里加一条，再回来指派。</p>
+      {!entries.length && (
+        <p className="meta">
+          先到「数据 → 模型」里加供应商和模型，再回来指派。
+        </p>
       )}
     </div>
   );

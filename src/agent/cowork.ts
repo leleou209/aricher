@@ -186,17 +186,24 @@ import {
   type VisitorRoom,
 } from "./visitor";
 import {
-  activateModelConfig,
-  createModelConfig,
-  ensureModelConfigsSchema,
-  getActiveModelConfig,
-  getConfigById,
-  listModelConfigs,
-  removeModelConfig,
-  updateModelConfig,
-  type ModelConfig,
-  type ModelConfigInput,
-  type ModelConfigPatch,
+  activateModelEntry,
+  createModelEntry,
+  createModelProvider,
+  ensureModelCatalogSchema,
+  getActiveCatalog,
+  getCatalogById,
+  listModelEntries,
+  listModelProviders,
+  removeModelEntry,
+  removeModelProvider,
+  updateModelEntry,
+  updateModelProvider,
+  type ActiveCatalog,
+  type ModelEntry,
+  type ModelEntryPatch,
+  type ModelProvider,
+  type ModelProviderInput,
+  type ModelProviderPatch,
 } from "./modelConfigs";
 import {
   createTtsConfig,
@@ -307,8 +314,8 @@ const MAX_STEPS = 8;
 const THINK_TIMEOUT = 12_000;
 
 /**
- * 来客房缓存「生效模型配置」的时长（见 fetchActiveModelConfig）。
- * 跨间调用一趟不便宜，配置是改一次用很久的东西 —— 半分钟的生效延迟
+ * 来客房缓存「生效模型目录组」的时长（见 fetchActiveCatalog）。
+ * 跨间调用一趟不便宜，目录是改一次用很久的东西 —— 半分钟的生效延迟
  * 换每句话少一跳往返，划算。
  */
 const ACTIVE_CONFIG_CACHE_MS = 30_000;
@@ -1902,12 +1909,12 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       this.guestChatTimes.push(now);
     }
 
-    // 这一轮用哪个模型：生效的厂商配置优先，没有就回落 Worker secrets 那条旧链。
-    // 房间开着深度思考（thinkMode=deep）时按主线条目的指向取另一条配置。
+    // 这一轮用哪个模型：生效的模型目录组优先，没有就回落 Worker secrets 那条旧链。
+    // 房间开着深度思考（thinkMode=deep）时按主线条目的指向取另一组。
     // 解析结果挂在实例上 —— 维护模型等小活从这拿（见 maintModel），下一轮进来再刷新。
     const deepThink = this.state.thinkMode === "deep";
     const resolved = await resolveModel(this.env, () =>
-      this.fetchActiveModelConfig(deepThink),
+      this.fetchActiveCatalog(deepThink),
     );
     if (!resolved) return new Response("API_KEY 未配置", { status: 500 });
     this._resolved = resolved;
@@ -3164,78 +3171,118 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     return removePublicPost(this.db, id, byCardId);
   }
 
-  // ── 模型厂商配置（model_configs，见 modelConfigs.ts）──────────
+  // ── 模型目录（model_providers / model_entries，见 modelConfigs.ts）────
   // 目录归主人那间：管理路由打到这里增删改查，对话主循环按生效条目建模；
-  // 来客那间只在开聊时隔着 DO 读生效那条（activeModelConfig，不带守卫 ——
+  // 来客那间只在开聊时隔着 DO 读生效那组（activeCatalog，不带守卫 ——
   // 表里存的是 secret 变量名，本来就没有 key 本体可泄）。
 
   private ensureModelConfigs(): void {
-    ensureModelConfigsSchema(this.db);
+    ensureModelCatalogSchema(this.db);
   }
 
-  /** 全部配置。管理面板的列表；来客那间调它永远得到空。 */
-  async modelConfigs(): Promise<ModelConfig[]> {
-    if (!this.isOwnerRoom) return [];
+  /** 整本目录：供应商 + 模型条目。管理面板的列表；来客那间调它永远得到空。 */
+  async modelCatalog(): Promise<{
+    providers: ModelProvider[];
+    entries: ModelEntry[];
+  }> {
+    if (!this.isOwnerRoom) return { providers: [], entries: [] };
     this.ensureModelConfigs();
-    return listModelConfigs(this.db);
+    return {
+      providers: listModelProviders(this.db),
+      entries: listModelEntries(this.db),
+    };
   }
 
-  /** 新建一条。格式与必填项的校验在 modelConfigs.ts 里做，不对就抛中文错误。 */
-  async addModelConfig(input: ModelConfigInput): Promise<ModelConfig> {
+  /** 新建一家供应商。格式与必填项的校验在 modelConfigs.ts 里做，不对就抛中文错误。 */
+  async addModelProvider(
+    input: ModelProviderInput,
+  ): Promise<{ provider: ModelProvider; entry: ModelEntry | null }> {
     if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
     this.ensureModelConfigs();
-    return createModelConfig(this.db, input);
+    return createModelProvider(this.db, input);
   }
 
-  /** 改一条：字段缺省不动。没这条返回 null。 */
-  async updateModelConfig(
+  /** 改一家供应商：字段缺省不动。没这家返回 null。 */
+  async updateModelProvider(
     id: string,
-    patch: ModelConfigPatch,
-  ): Promise<ModelConfig | null> {
+    patch: ModelProviderPatch,
+  ): Promise<ModelProvider | null> {
     if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
     this.ensureModelConfigs();
-    return updateModelConfig(this.db, id, patch);
+    return updateModelProvider(this.db, id, patch);
   }
 
-  /** 删一条。删的是生效条目时，modelConfigs.ts 会把最新的另一条顶上来。 */
-  async removeModelConfig(id: string): Promise<boolean> {
+  /** 删一家供应商（连同名下条目）。深度思考槽位若指向被删的条目，就地清空。 */
+  async removeModelProvider(id: string): Promise<boolean> {
     if (!this.isOwnerRoom) return false;
     this.ensureModelConfigs();
-    const ok = await removeModelConfig(this.db, id);
+    const doomed = listModelEntries(this.db)
+      .filter((e) => e.providerId === id)
+      .map((e) => e.id);
+    const ok = removeModelProvider(this.db, id);
+    // 深度思考槽位若指着被删的条目，就地清空 —— 退回「跟普通模式同一套」
+    if (
+      ok &&
+      this.state.deepConfigId &&
+      doomed.includes(this.state.deepConfigId)
+    )
+      this.patchState({ deepConfigId: "" });
+    return ok;
+  }
+
+  /** 往一家供应商底下挂一个模型条目。 */
+  async addModelEntry(input: {
+    providerId: string;
+    model: string;
+    maxOutput?: number;
+  }): Promise<ModelEntry> {
+    if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
+    this.ensureModelConfigs();
+    return createModelEntry(this.db, input);
+  }
+
+  /** 改一个模型条目（模型名 / 输出上限 / 设为生效）。没这条返回 null。 */
+  async updateModelEntry(
+    id: string,
+    patch: ModelEntryPatch,
+  ): Promise<ModelEntry | null> {
+    if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
+    this.ensureModelConfigs();
+    return updateModelEntry(this.db, id, patch);
+  }
+
+  /** 删一个模型条目。删的是生效条目时，modelConfigs.ts 会把最新的另一条顶上来。 */
+  async removeModelEntry(id: string): Promise<boolean> {
+    if (!this.isOwnerRoom) return false;
+    this.ensureModelConfigs();
+    const ok = removeModelEntry(this.db, id);
     // 深度思考槽位若指着这条被删的，就地清空 —— 退回「跟普通模式同一套」
     if (ok && this.state.deepConfigId === id)
       this.patchState({ deepConfigId: "" });
     return ok;
   }
 
-  /** 点名生效。没这条返回 null。 */
-  async activateModelConfig(id: string): Promise<ModelConfig | null> {
-    if (!this.isOwnerRoom) throw new Error("模型配置只在主人那间维护");
-    this.ensureModelConfigs();
-    return activateModelConfig(this.db, id);
-  }
-
   /**
-   * 普通模式生效的那条。无守卫 —— 来客那间的对话也要按这些建模。
+   * 普通模式生效的那组（条目 + 供应商）。无守卫 —— 来客那间的对话也要按这些建模。
    */
-  async activeModelConfig(): Promise<ModelConfig | null> {
+  async activeCatalog(): Promise<ActiveCatalog | null> {
     this.ensureModelConfigs();
-    return getActiveModelConfig(this.db);
+    return getActiveCatalog(this.db);
   }
 
   /**
-   * 深度思考生效的那条：回复风格页把某条配置指派给「深度思考」槽位
-   * （state.deepConfigId），指派已失效（条目被删）就退回普通模式那条 ——
+   * 深度思考生效的那组：回复风格页把某个模型条目指派给「深度思考」槽位
+   * （state.deepConfigId），指派已失效（条目被删）就退回普通模式那组 ——
    * 换个槽位不该把深度思考弄挂。同样无守卫。
    */
-  async deepModelConfig(): Promise<ModelConfig | null> {
+  async deepCatalog(): Promise<ActiveCatalog | null> {
     this.ensureModelConfigs();
     const id = this.state.deepConfigId;
     if (id) {
-      const cfg = getConfigById(this.db, id);
-      if (cfg) return cfg;
+      const cat = getCatalogById(this.db, id);
+      if (cat) return cat;
     }
-    return getActiveModelConfig(this.db);
+    return getActiveCatalog(this.db);
   }
 
   // ── 读音配置（tts_configs，见 ttsConfigs.ts）──────────────────
@@ -3277,43 +3324,42 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
   }
 
   /**
-   * 这一轮实际建模用的配置。deep=true 表示房间开了深度思考 ——
-   * 主线条目若把深度思考指向了另一条配置，就用那条（连格式/key 都可以换一家）；
-   * 那条配置的 key 没配进这台机器，就退回主线，深度思考降档但不掉线。
+   * 这一轮实际建模用的目录组。deep=true 表示房间开了深度思考 ——
+   * 主线条目若把深度思考指向了另一个条目，就用那组（连供应商/key 都可以换一家）；
+   * 那组供应商的 key 没配进这台机器，就退回主线，深度思考降档但不掉线。
    *
    * 主人那间直接查自己的表；来客那间隔着 DO 去主人房取，取回来缓存 30 秒 ——
-   * 每句话都跑一趟跨间调用太贵，而配置是「改一次用很久」的东西，
+   * 每句话都跑一趟跨间调用太贵，而目录是「改一次用很久」的东西，
    * 改完最多等半分钟生效，面板上说明这一点比每句对话多一跳往返划算。
    * 主人房没醒 / 出错都当没配置过，回落旧链，聊天不能因此断。
    */
-  private _activeModelCfg = new Map<
+  private _activeCatalog = new Map<
     boolean,
-    { at: number; cfg: ModelConfig | null }
+    { at: number; cat: ActiveCatalog | null }
   >();
-  private async fetchActiveModelConfig(
+  private async fetchActiveCatalog(
     deep = false,
-  ): Promise<ModelConfig | null> {
+  ): Promise<ActiveCatalog | null> {
     if (this.isOwnerRoom)
-      return deep ? this.deepModelConfig() : this.activeModelConfig();
-    const c = this._activeModelCfg.get(deep);
-    if (c && Date.now() - c.at < ACTIVE_CONFIG_CACHE_MS) return c.cfg;
+      return deep ? this.deepCatalog() : this.activeCatalog();
+    const c = this._activeCatalog.get(deep);
+    if (c && Date.now() - c.at < ACTIVE_CONFIG_CACHE_MS) return c.cat;
     try {
       const owner = this.env.COWORK_AGENT.get(
         this.env.COWORK_AGENT.idFromName(OWNER_AGENT),
       );
-      let cfg: ModelConfig | null =
-        (await (deep ? owner.deepModelConfig() : owner.activeModelConfig())) ||
-        null;
-      // 深度那条的 key 没配：退回主线，别一头栽进 secrets 旧链
-      if (deep && cfg) {
+      let cat: ActiveCatalog | null =
+        (await (deep ? owner.deepCatalog() : owner.activeCatalog())) || null;
+      // 深度那组的 key 没配：退回主线，别一头栽进 secrets 旧链
+      if (deep && cat) {
         const key = (this.env as unknown as Record<string, unknown>)[
-          cfg.keySecret
+          cat.provider.keySecret
         ];
         if (typeof key !== "string" || !key)
-          cfg = await this.fetchActiveModelConfig(false);
+          cat = await this.fetchActiveCatalog(false);
       }
-      this._activeModelCfg.set(deep, { at: Date.now(), cfg });
-      return cfg;
+      this._activeCatalog.set(deep, { at: Date.now(), cat });
+      return cat;
     } catch {
       return null;
     }

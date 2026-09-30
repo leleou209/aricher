@@ -1,8 +1,8 @@
 // AI SDK model provider 工厂。
 //
 // 两条建模的路：
-// - 目录链（model_configs，管理员面板配的）：生效条目说用哪家、什么协议、
-//   去哪个门，key 从该条目点名的 secret 变量名取；
+// - 目录链（模型目录，管理员面板配的）：生效的模型条目 + 它挂的供应商
+//   说用哪家、什么协议、去哪个门，key 从供应商点名的 secret 变量名取；
 // - 旧链（Worker secrets）：API_ENDPOINT 是 Anthropic 兼容端点（如
 //   https://api.deepseek.com/anthropic）。注意 AI SDK 只会在 baseURL 后面补一个
 //   /messages，**不会**补 /v1 —— 所以端点的 /v1 要自己带上（DeepSeek 恰好
@@ -16,7 +16,7 @@ import type { LanguageModel } from "ai";
 import { mimoAnthropicBase } from "./mimo";
 import {
   toMaxOutput,
-  type ModelConfig,
+  type ActiveCatalog,
   type ModelFormat,
 } from "./agent/modelConfigs";
 
@@ -77,7 +77,7 @@ export const TITLE_PROVIDER_OPTIONS = {
   anthropic: { thinking: { type: "disabled" } },
 } as const;
 
-// ── 目录链：按 model_configs 的生效条目建模 ─────────────────
+// ── 目录链：按模型目录（供应商 + 生效条目）建模 ───────────────
 
 /** 一次解析的结果：主模型 + 输出上限 + 维护模型（后者不可能为 null） */
 export interface ResolvedModel {
@@ -92,7 +92,7 @@ function envSecret(env: Env, name: string): string {
   return typeof v === "string" ? v : "";
 }
 
-/** 按目录条目的格式建一个模型。baseUrl 原样透传 —— 路径语义由 AI SDK 自己补。 */
+/** 按供应商的格式建一个模型。baseUrl 原样透传 —— 路径语义由 AI SDK 自己补。 */
 function buildModel(
   format: ModelFormat,
   baseUrl: string,
@@ -111,48 +111,55 @@ function buildModel(
 /**
  * 把「这一轮该用哪个模型」定下来。
  *
- * fetchActive 去主人那间读 model_configs 的生效条目（调用方负责缓存），
- * 读到了且它点名的 key 在这台机器上真的配了，就走目录链；
+ * fetchActive 去主人那间读模型目录的生效一组（生效条目 + 它挂的供应商，
+ * 调用方负责缓存），读到了且供应商点名的 key 在这台机器上真的配了，就走目录链；
  * 读不到、key 缺了、中途出错 —— 一律回落旧链。换厂商是锦上添花，
  * 不能因为目录那边出任何岔子让整台机器说不了话。
  */
 export async function resolveModel(
   env: Env,
-  fetchActive: () => Promise<ModelConfig | null>,
+  fetchActive: () => Promise<ActiveCatalog | null>,
 ): Promise<ResolvedModel | null> {
-  let cfg: ModelConfig | null = null;
+  let catalog: ActiveCatalog | null = null;
   try {
-    cfg = await fetchActive();
+    catalog = await fetchActive();
   } catch {
-    cfg = null;
+    catalog = null;
   }
 
-  if (cfg) {
-    const apiKey = envSecret(env, cfg.keySecret);
+  if (catalog) {
+    const { entry, provider } = catalog;
+    const apiKey = envSecret(env, provider.keySecret);
     if (apiKey) {
-      const model = buildModel(cfg.format, cfg.baseUrl, apiKey, cfg.model);
-      // 维护模型：单独配了 key 就另建一个；只写了模型名没写 key 不算数 ——
-      // 用主线那把 key 去调另一个模型名，多半是没开通，报错只会更难查。
-      const maintKey = cfg.maintKeySecret
-        ? envSecret(env, cfg.maintKeySecret)
+      const model = buildModel(
+        provider.format,
+        provider.baseUrl,
+        apiKey,
+        entry.model,
+      );
+      // 维护模型：供应商单独配了维护 key 就另建一个，模型名取维护口那行
+      // （空了复用主线）；只写模型名没写 key 不算数 —— 用本家 key 去调另一个
+      // 模型名，多半是没开通，报错只会更难查。
+      const maintKey = provider.maintKeySecret
+        ? envSecret(env, provider.maintKeySecret)
         : "";
       const maintModel = maintKey
         ? buildModel(
-            cfg.format,
-            cfg.baseUrl,
+            provider.format,
+            provider.baseUrl,
             maintKey,
-            cfg.maintModel || cfg.model,
+            provider.maintModel || entry.model,
           )
         : model;
       return {
         model,
-        maxOutput: toMaxOutput(cfg.maxOutput),
+        maxOutput: toMaxOutput(entry.maxOutput),
         maintModel,
       };
     }
-    // 只提醒一行：目录条目配了但这台机器没那把钥匙，是迁移期最常见的状态
+    // 只提醒一行：目录配置了但这台机器没那把钥匙，是迁移期最常见的状态
     console.warn(
-      `[model-configs] 配置「${cfg.name}」点名的 ${cfg.keySecret} 没配 key，回落到内置配置`,
+      `[model-configs] 供应商「${provider.name}」点名的 ${provider.keySecret} 没配 key，回落到内置配置`,
     );
   }
 

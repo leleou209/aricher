@@ -873,7 +873,7 @@ async function handleApi(
     return writeState(Promise.resolve(agent.removeGuestType(id)));
   }
 
-  // ── 模型厂商配置目录（model_configs）：这张台子用哪家模型，只有管理员能碰 ──
+  // ── 模型目录（供应商 + 模型条目两级）：这张台子用哪家模型，只有管理员能碰 ──
   // 表在主人那间，回显里只有 secret 的变量名（keySecret）—— key 本体在
   // Worker secrets 里，从不落库、从不外发。keySecrets 是已知钥匙名单：
   // 面板「用哪把 key」下拉框的选项，只回名字不回值。
@@ -882,17 +882,19 @@ async function handleApi(
       const known = env as unknown as Record<string, unknown>;
       return Response.json({
         ok: true,
-        configs: await agent.modelConfigs(),
+        ...(await agent.modelCatalog()),
         keySecrets: KNOWN_KEY_SECRETS.filter((k) => !!known[k]),
       });
     } catch (e) {
       return fail(e);
     }
   }
-  if (p === "/api/model-configs" && m === "POST") {
+  // 新建一家供应商。firstModel 给了就顺手挂上首个模型条目（没有生效条目时
+  // 它自动生效）—— 「从厂商开始 → 拉列表 → 点一个 → 保存」一步到位。
+  if (p === "/api/model-configs/providers" && m === "POST") {
     try {
       const body = (await req.json()) as Record<string, unknown>;
-      for (const f of ["name", "format", "baseUrl", "keySecret", "model"]) {
+      for (const f of ["name", "format", "baseUrl", "keySecret"]) {
         if (typeof body[f] !== "string" || !(body[f] as string).trim())
           return Response.json(
             { ok: false, error: `缺少 ${f}` },
@@ -901,20 +903,21 @@ async function handleApi(
       }
       return writeState(
         Promise.resolve(
-          agent.addModelConfig({
+          agent.addModelProvider({
             name: body.name as string,
             format: body.format as string,
             baseUrl: body.baseUrl as string,
             keySecret: body.keySecret as string,
-            model: body.model as string,
-            maxOutput:
-              typeof body.maxOutput === "number" ? body.maxOutput : undefined,
             maintKeySecret:
               typeof body.maintKeySecret === "string"
                 ? body.maintKeySecret
                 : undefined,
             maintModel:
               typeof body.maintModel === "string" ? body.maintModel : undefined,
+            firstModel:
+              typeof body.firstModel === "string" ? body.firstModel : undefined,
+            maxOutput:
+              typeof body.maxOutput === "number" ? body.maxOutput : undefined,
           }),
         ),
       );
@@ -922,7 +925,7 @@ async function handleApi(
       return fail(e);
     }
   }
-  if (p === "/api/model-configs" && m === "PATCH") {
+  if (p === "/api/model-configs/providers" && m === "PATCH") {
     try {
       const body = (await req.json()) as Record<string, unknown>;
       const id = typeof body.id === "string" ? body.id : "";
@@ -932,16 +935,63 @@ async function handleApi(
         typeof body[k] === "string" ? (body[k] as string) : undefined;
       return writeState(
         Promise.resolve(
-          agent.updateModelConfig(id, {
+          agent.updateModelProvider(id, {
             name: str("name"),
             format: str("format"),
             baseUrl: str("baseUrl"),
             keySecret: str("keySecret"),
-            model: str("model"),
-            maxOutput:
-              typeof body.maxOutput === "number" ? body.maxOutput : undefined,
             maintKeySecret: str("maintKeySecret"),
             maintModel: str("maintModel"),
+          }),
+        ),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  }
+  if (p === "/api/model-configs/providers" && m === "DELETE") {
+    const id = url.searchParams.get("id") || "";
+    if (!id)
+      return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
+    return writeState(Promise.resolve(agent.removeModelProvider(id)));
+  }
+  if (p === "/api/model-configs/entries" && m === "POST") {
+    try {
+      const body = (await req.json()) as Record<string, unknown>;
+      const providerId =
+        typeof body.providerId === "string" ? body.providerId : "";
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      if (!providerId || !model)
+        return Response.json(
+          { ok: false, error: "缺少 providerId / model" },
+          { status: 400 },
+        );
+      return writeState(
+        Promise.resolve(
+          agent.addModelEntry({
+            providerId,
+            model,
+            maxOutput:
+              typeof body.maxOutput === "number" ? body.maxOutput : undefined,
+          }),
+        ),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  }
+  if (p === "/api/model-configs/entries" && m === "PATCH") {
+    try {
+      const body = (await req.json()) as Record<string, unknown>;
+      const id = typeof body.id === "string" ? body.id : "";
+      if (!id)
+        return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
+      return writeState(
+        Promise.resolve(
+          agent.updateModelEntry(id, {
+            model: typeof body.model === "string" ? body.model : undefined,
+            maxOutput:
+              typeof body.maxOutput === "number" ? body.maxOutput : undefined,
             active: typeof body.active === "boolean" ? body.active : undefined,
           }),
         ),
@@ -950,11 +1000,11 @@ async function handleApi(
       return fail(e);
     }
   }
-  if (p === "/api/model-configs" && m === "DELETE") {
+  if (p === "/api/model-configs/entries" && m === "DELETE") {
     const id = url.searchParams.get("id") || "";
     if (!id)
       return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
-    return writeState(Promise.resolve(agent.removeModelConfig(id)));
+    return writeState(Promise.resolve(agent.removeModelEntry(id)));
   }
   // 让厂商报一份它家的模型清单，填「模型名」时照抄而不用手打。
   // 只做透传：地址必须 https，key 由这台机器自己持有的 secrets 出 ——
