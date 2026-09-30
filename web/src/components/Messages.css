@@ -404,6 +404,19 @@
   word-break: break-all;
 }
 
+/* 出错的死因（中断兜底 / 工具抛的错）：红色立起来，一眼和输入输出分开 */
+.tool-err {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--yuzhe-danger);
+  background: rgba(201, 54, 44, 0.06);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--yuzhe-danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 工具画出来的图：摆出来，点开看大图 */
 .tool-img {
   display: block;
@@ -412,6 +425,37 @@
   border: 1px solid var(--yuzhe-line);
   border-radius: var(--yuzhe-r-m);
   cursor: zoom-in;
+}
+
+/* mermaid 渲出来的示意图：白底卡片，白板讲解的气质；暗色主题下渲染器自己出黑底 */
+.mermaid-view {
+  background: #ffffff;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-m);
+  padding: 12px;
+  margin-top: 8px;
+  max-width: min(480px, 100%);
+  overflow-x: auto;
+  cursor: zoom-in;
+}
+
+.mermaid-view svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* 渲染中 / 渲染失败：不占大块白底，一行小字说清楚发生了什么 */
+.mermaid-view.mermaid-note {
+  background: transparent;
+  border-style: dashed;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--yuzhe-ink-dim);
 }
 
 /* ── 思考块：12.5px 次级色 + 左发丝线 ── */

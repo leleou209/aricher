@@ -30,10 +30,29 @@ const anthropicProvider = Object.assign(vi.fn(anthropicModel), {
   chat: vi.fn(anthropicModel),
 });
 
-const chatModel = (id: string) => ({ vendor: "openai-chat", modelId: id });
+const chatModel = (id: string) => ({
+  vendor: "openai-chat",
+  modelId: id,
+  doStream: vi.fn(async () => ({
+    stream: new ReadableStream({
+      start(ctrl) {
+        ctrl.close();
+      },
+    }),
+    rawCall: { rawPrompt: null, rawSettings: {} },
+  })),
+});
 const responsesModel = (id: string) => ({
   vendor: "openai-responses",
   modelId: id,
+  doStream: vi.fn(async () => ({
+    stream: new ReadableStream({
+      start(ctrl) {
+        ctrl.close();
+      },
+    }),
+    rawCall: { rawPrompt: null, rawSettings: {} },
+  })),
 });
 const openaiProvider = Object.assign(vi.fn(chatModel), {
   chat: vi.fn(chatModel),
@@ -66,7 +85,7 @@ const entry = (over: Partial<ModelEntry> = {}): ModelEntry => ({
   id: "abcd1234",
   providerId: "prov0001",
   model: "deepseek-v4-pro",
-  maxOutput: 32768,
+  maxOutput: 131072,
   contextWindow: 0,
   active: true,
   created: "2026-01-01T00:00:00.000Z",
@@ -96,7 +115,7 @@ describe("resolveModel：三种格式", () => {
       vendor: "anthropic",
       modelId: "deepseek-v4-pro",
     });
-    expect(r?.maxOutput).toBe(32768);
+    expect(r?.maxOutput).toBe(131072);
     // 没配维护 key：复用主模型本体
     expect(r?.maintModel).toBe(r?.model);
   });
@@ -108,14 +127,37 @@ describe("resolveModel：三种格式", () => {
         { model: "gpt-5.2" },
       ),
     );
-    expect(createOpenAI).toHaveBeenCalledWith({
-      apiKey: "sk-2",
-      baseURL: "https://api.example.com",
-    });
+    // 桥是惰性的：真跑一轮调用才现场建 provider（网络 stub 掉）
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ),
+    );
+    const stream = await (
+      r?.model as unknown as {
+        doStream: (o: unknown) => Promise<{ stream: ReadableStream }>;
+      }
+    ).doStream({ prompt: [] });
+    const reader = stream.stream.getReader();
+    await reader.read();
+    reader.cancel();
+    vi.unstubAllGlobals();
+    // 参数里多了抓思维链的 fetch
+    expect(createOpenAI).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "sk-2",
+        baseURL: "https://api.example.com",
+      }),
+    );
     expect(openaiProvider.chat).toHaveBeenCalledWith("gpt-5.2");
     expect(openaiProvider.responses).not.toHaveBeenCalled();
-    expect(r?.model).toEqual({
-      vendor: "openai-chat",
+    expect(r?.model).toMatchObject({
+      provider: "hr-desk.openai-bridge",
       modelId: "gpt-5.2",
     });
   });
@@ -127,10 +169,29 @@ describe("resolveModel：三种格式", () => {
         { model: "gpt-5.2" },
       ),
     );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            'data: {"type":"response.output_text.delta","item_id":"i1","output_index":0,"content_index":0,"delta":"hi"}\n\n',
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ),
+    );
+    const stream = await (
+      r?.model as unknown as {
+        doStream: (o: unknown) => Promise<{ stream: ReadableStream }>;
+      }
+    ).doStream({ prompt: [] });
+    const reader = stream.stream.getReader();
+    await reader.read();
+    reader.cancel();
+    vi.unstubAllGlobals();
     expect(openaiProvider.responses).toHaveBeenCalledWith("gpt-5.2");
     expect(openaiProvider.chat).not.toHaveBeenCalled();
-    expect(r?.model).toEqual({
-      vendor: "openai-responses",
+    expect(r?.model).toMatchObject({
+      provider: "hr-desk.openai-bridge",
       modelId: "gpt-5.2",
     });
   });
@@ -151,7 +212,7 @@ describe("resolveModel：三种格式", () => {
     const bad = await resolveModel(env({ DEEPSEEK_KEY: "sk-1" }), async () =>
       catalog({}, { maxOutput: 0 }),
     );
-    expect(bad?.maxOutput).toBe(32768);
+    expect(bad?.maxOutput).toBe(131072);
   });
 
   it("contextWindow 走条目的：没设（0）回落默认档", async () => {
@@ -205,7 +266,7 @@ describe("resolveModel：回落旧链", () => {
     modelId: "claude-sonnet-4-20250514",
   };
 
-  it("供应商点名的那把 key 没配：回落 mainModel，maxOutput 32768", async () => {
+  it("供应商点名的那把 key 没配：回落 mainModel，maxOutput 131072", async () => {
     const r = await resolveModel(env({ API_KEY: "k" }), async () =>
       catalog({ keySecret: "NOT_SET" }),
     );
@@ -216,7 +277,7 @@ describe("resolveModel：回落旧链", () => {
       headers: undefined,
     });
     expect(r?.model).toEqual(OLD_CHAIN);
-    expect(r?.maxOutput).toBe(32768);
+    expect(r?.maxOutput).toBe(131072);
   });
 
   it("没有生效条目：回落旧链，维护模型跟 maintenanceModel", async () => {

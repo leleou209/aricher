@@ -24,7 +24,9 @@ export function sessionTools(ctx: ToolCtx) {
         "没想清楚值不值得单开一场时，就照常在正文里说。\n" +
         `现在是北京时间 ${nowInShanghai()}。\n` +
         "不填 at 就是现在开，他会看到侧栏里多出一行在闪；填了 at（绝对时间，带时区偏移）" +
-        "就是到点再开，在那之前这场不存在。",
+        "就是到点再开，在那之前这场不存在。\n" +
+        "⚠️ 定时那场到点说的是这件事的提要（一段话），不是原样投递完整正文 —— " +
+        "成稿要一字不差地到的，先把它写进笔记存好，到点那场里说「笔记《xx》写好了」，别把定时投递当快递。",
       inputSchema: z.object({
         title: z
           .string()
@@ -76,7 +78,11 @@ export function sessionTools(ctx: ToolCtx) {
             title,
           });
           const when = every ? `${at} 起每 ${every}` : at;
-          return `记下了：${when} 我会新开一场「${title}」跟你说这件事。`;
+          return (
+            `记下了：${when} 我会新开一场「${title}」跟你说这件事。` +
+            `到点说的是这件事的提要；要是完整成稿才作数的，现在先把全文存进笔记，` +
+            `到点那场里说「笔记《${title}》写好了」让他自己打开看。`
+          );
         } catch (e) {
           return `没能定下来：${(e as Error).message}`;
         }

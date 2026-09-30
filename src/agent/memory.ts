@@ -892,6 +892,22 @@ export function insertMemory(sql: SqlTag, input: NewMemory): MemEntry {
 }
 
 /**
+ * 快照整行落库 —— 场屋寄回主屋并账的收账口。
+ *
+ * 和 insertMemory 的分工：insertMemory 是「记一条新的」（生成 id、learned、归一化），
+ * 这个是「这一条在那边长什么样，照着抄」—— 作废、疑问、确认时刻这些状态都以快照为准。
+ * 幂等：同 id 反复寄，后到的覆盖先到的（durable queue 重试安全）。
+ * owner_key / dedupe_key 不在快照里：主人的记忆没有来客归属键，重跑保护是写入侧的事。
+ */
+export function upsertMemorySnapshot(sql: SqlTag, e: MemEntry): void {
+  ensureMemorySchema(sql);
+  sql`
+    INSERT OR REPLACE INTO memories (id, date, type, tags, weight, shelf, person, visibility, content, accessed, learned, superseded_by, volatility, verified, valid_at, invalid_at, conflicts_with, title, file_key, session_id, sentiment, sensitivity, score, owner_key, visibility_hold, dedupe_key, last_accessed_at)
+    VALUES (${e.id}, ${e.date}, ${e.type}, ${e.tags.join(",")}, ${e.weight}, ${e.shelf}, ${e.person}, ${e.visibility}, ${e.content}, ${e.accessed}, ${e.learned}, ${e.supersededBy}, ${e.volatility}, ${e.verified}, ${e.validAt}, ${e.invalidAt}, ${e.conflictsWith.join(",")}, ${e.title}, ${e.fileKey}, ${e.sessionId}, ${e.sentiment}, ${e.sensitivity}, ${e.score}, "", ${e.hold ? 1 : 0}, "", 0)
+  `;
+}
+
+/**
  * 按回想幂等键找已落的条目。给工具层判「这一段是不是上一趟已经记过」用：
  * 判出重复就整段跳过 —— insertMemory 虽然自己也会挡住重复落库，但它挡不住
  * 调用方拿着返回的旧条目 id 去喂新正文向量，那会让向量层和 SQLite 说两套话。

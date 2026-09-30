@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertInScope,
   canReadFile,
   fileResponseHeaders,
   roomKeyPrefix,
+  safeFolder,
+  safeKeyPath,
   scopedKey,
+  SESSION_FOLDER,
+  sessionKey,
 } from "../src/fileAccess";
 
 describe("房间文件划界", () => {
@@ -80,6 +85,107 @@ describe("scopedKey 生成", () => {
     expect(a).not.toBe(b);
     expect(scopedKey("guest-ab12", "diagram", "svg")).toMatch(
       /^f\/guest-ab12\/diagram-\d{13}-[0-9a-f]{8}\.svg$/,
+    );
+  });
+});
+
+describe("sessionKey 会话归档", () => {
+  it("有会话就落进 会话/<id>/ 文件夹，房间划界照旧", () => {
+    expect(
+      sessionKey("default", "s-123", "draw", "png"),
+    ).toMatch(
+      new RegExp(`^f\\/default\\/${SESSION_FOLDER}\\/s-123\\/draw-\\d{13}-[0-9a-f]{8}\\.png$`),
+    );
+    // 来客房的产物也归档在自己那间之下，读取划界（canReadFile）不用改
+    const k = sessionKey("guest-ab12", "s-9", "diagram", "mmd");
+    expect(k.startsWith("f/guest-ab12/会话/s-9/")).toBe(true);
+    expect(canReadFile(k, "user", "guest-ab12")).toBe(true);
+    expect(canReadFile(k, "user", "guest-cccc")).toBe(false);
+  });
+
+  it("没有会话退回旧路：根目录直落，行为与改造前一字不差", () => {
+    expect(sessionKey("default", undefined, "draw", "png")).toMatch(
+      /^f\/default\/draw-\d{13}-[0-9a-f]{8}\.png$/,
+    );
+    expect(sessionKey("default", "", "draw", "png")).toMatch(
+      /^f\/default\/draw-\d{13}-[0-9a-f]{8}\.png$/,
+    );
+  });
+});
+
+describe("safeFolder 路径洗净", () => {
+  it("正常路径原样收下：多余斜杠和首尾空白都抹平", () => {
+    expect(safeFolder("通用")).toBe("通用");
+    expect(safeFolder("/个人/合同/")).toBe("个人/合同");
+    expect(safeFolder("  a / b  ")).toBe("a/b");
+    expect(safeFolder("")).toBe("");
+  });
+
+  it("不合法的一律抛错：上跳、当前段、控制字符、分隔符、超深、超长", () => {
+    expect(() => safeFolder("../别人家")).toThrow();
+    expect(() => safeFolder("a/..")).toThrow();
+    expect(() => safeFolder("a/./b")).toThrow();
+    expect(() => safeFolder("a\\b")).toThrow();
+    expect(() => safeFolder("a\u0000b")).toThrow();
+    expect(() => safeFolder("a/b/c/d/e/f/g")).toThrow(); // 默认最多 6 层
+    expect(() => safeFolder(`${"长".repeat(81)}`)).toThrow();
+  });
+
+  it("中文和常见符号段是合法的：会话、备注（2026）都收", () => {
+    expect(safeFolder("会话/s-123/备注（2026）")).toBe(
+      "会话/s-123/备注（2026）",
+    );
+  });
+});
+
+describe("safeKeyPath 整条路径洗净", () => {
+  it("正常的 key 原样收下：房间前缀、子目录、文件名都保留", () => {
+    expect(safeKeyPath("f/default/通用/合同.pdf")).toBe(
+      "f/default/通用/合同.pdf",
+    );
+    expect(safeKeyPath("/f/guest-ab12//会话/s-1/draw-1.png/")).toBe(
+      "f/guest-ab12/会话/s-1/draw-1.png",
+    );
+  });
+
+  it("空路径、上跳、非法字符、超深都拒", () => {
+    expect(() => safeKeyPath("")).toThrow();
+    expect(() => safeKeyPath("  ")).toThrow();
+    expect(() => safeKeyPath("f/a/../b.png")).toThrow();
+    expect(() => safeKeyPath("f/a/b\\c.png")).toThrow();
+    expect(() => safeKeyPath("a/b/c/d/e/f/g/h/i/j/k/l/m")).toThrow(); // 最多 12 段
+  });
+
+  it(".keep 占位段是合法的：它只是个以点开头的普通名字", () => {
+    expect(safeKeyPath("f/default/新建文件夹/.keep")).toBe(
+      "f/default/新建文件夹/.keep",
+    );
+  });
+});
+
+describe("assertInScope 范围划界", () => {
+  it("来客：房间前缀内的放行，别人的房间和公开空间都拒", () => {
+    const scope = roomKeyPrefix("guest-ab12");
+    expect(() =>
+      assertInScope("f/guest-ab12/会话/s-1/draw.png", scope),
+    ).not.toThrow();
+    expect(() => assertInScope("f/guest-cccc/x.png", scope)).toThrow();
+    expect(() => assertInScope("f/public/poster.png", scope)).toThrow();
+  });
+
+  it("管理员 scope 为空串：整只桶都放行", () => {
+    expect(() => assertInScope("f/guest-cccc/x.png", "")).not.toThrow();
+    expect(() => assertInScope("旧文件.png", "")).not.toThrow();
+  });
+});
+
+describe("scopedKey 带 folder", () => {
+  it("给 folder 就落在房间前缀下的子目录里；不给维持原路", () => {
+    expect(scopedKey("default", "合同", "pdf", "个人/2026")).toMatch(
+      /^f\/default\/个人\/2026\/合同-\d{13}-[0-9a-f]{8}\.pdf$/,
+    );
+    expect(scopedKey("default", "draw", "png")).toMatch(
+      /^f\/default\/draw-\d{13}-[0-9a-f]{8}\.png$/,
     );
   });
 });

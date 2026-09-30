@@ -135,9 +135,12 @@ export function listVisitorEvents(
   limit = 500,
 ): VisitorEvent[] {
   ensureVisitorSchema(sql);
+  // 本屋 + 本屋名下的场屋一起翻：场屋的账寄回人屋并着记（见 acceptVisitorEvents），
+  // 翻账的人要的是「这个人做了什么」，不该自己去猜账记在哪间屋里
   const rows = sql<EventRow>`
     SELECT id, room, nickname, kind, detail, ts FROM visitor_events
-    WHERE room = ${room} ORDER BY ts DESC LIMIT ${limit}`;
+    WHERE room = ${room} OR room LIKE ${room + "--%"}
+    ORDER BY ts DESC LIMIT ${limit}`;
   const events: VisitorEvent[] = [];
   for (const r of rows) {
     if (r.kind === VISITOR_BATCH_KIND) {

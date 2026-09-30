@@ -29,7 +29,7 @@ export function recallTools(ctx: ToolCtx) {
         const q = (a.query || "").trim();
         if (!q) return "要搜什么？给我一个关键词。";
 
-        const hits = ctx.recall(q);
+        const hits = await ctx.recall(q);
         if (!hits.length) return `没找到和「${q}」有关的旧对话。`;
 
         // 按会话归拢：先给「我们哪几次聊到过」，再给具体说了什么，模型才好说清出处

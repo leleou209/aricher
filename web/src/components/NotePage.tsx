@@ -69,9 +69,12 @@ function splitTags(s: string): string[] {
 export function NotePage({
   state,
   onNav,
+  room,
 }: {
   state: ChatState;
   onNav: (v: ViewKey) => void;
+  /** 本子跟着场走：连在哪间场屋上，读写的就是哪一间的笔记本 */
+  room: string;
 }) {
   const [list, setList] = useState<NoteMeta[]>([]);
   const [q, setQ] = useState("");
@@ -88,41 +91,48 @@ export function NotePage({
   const loading = useRef(true);
   const titleRef = useRef<HTMLInputElement>(null);
 
-  const refresh = useCallback(async (keyword = "") => {
-    try {
-      setList(await api.notes(keyword || undefined));
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (keyword = "") => {
+      try {
+        setList(await api.notes(keyword || undefined, undefined, room));
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    },
+    [room],
+  );
 
-  const open = useCallback(async (id: string) => {
-    try {
-      const n = await api.readNote(id);
-      if (!n) return;
-      loading.current = true;
-      setCurrent(n);
-      setTitle(n.title);
-      setBody(n.body);
-      setTagsText(n.tags.join("、"));
-      setDirty(false);
-      setRevs(null);
-      setPreview(false);
-      setErr("");
-      // 上报「我翻开了这一篇」。失败不打扰人 —— 界面照常能用，只是他这一轮少知道一件事
-      void api.focusNote(id).catch(() => {});
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  }, []);
+  const open = useCallback(
+    async (id: string) => {
+      try {
+        const n = await api.readNote(id, room);
+        if (!n) return;
+        loading.current = true;
+        setCurrent(n);
+        setTitle(n.title);
+        setBody(n.body);
+        setTagsText(n.tags.join("、"));
+        setDirty(false);
+        setRevs(null);
+        setPreview(false);
+        setErr("");
+        // 上报「我翻开了这一篇」。失败不打扰人 —— 界面照常能用，只是他这一轮少知道一件事
+        void api.focusNote(id, room).catch(() => {});
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    },
+    [room],
+  );
 
   // 进页面时：拿列表，然后接上次那篇（后端记着的 noteFocus 还在本子上的话），
-  // 没接过就打开最前面那篇。省掉他每次进来都要重新找一遍
+  // 没接过就打开最前面那篇。省掉他每次进来都要重新找一遍。
+  // room 也算进依赖：本子跟着场走，换了一场进来就是另一本
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const rows = await api.notes();
+        const rows = await api.notes(undefined, undefined, room);
         if (!alive) return;
         setList(rows);
         const want =
@@ -137,9 +147,9 @@ export function NotePage({
     return () => {
       alive = false;
     };
-    // 只在进页面时跑一次：之后列表由 refresh 维护，跟着 q 走
+    // 之后列表由 refresh 维护，跟着 q 走
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [room]);
 
   // 搜索：打字停下来再问后端，不然每敲一个字都打一次
   useEffect(() => {
@@ -159,13 +169,16 @@ export function NotePage({
     if (!current) return;
     setSaving(true);
     try {
-      const n = await api.saveNote({
-        id: current.id,
-        // 标题留空时交给后端从正文首行取一句 —— 一篇没名字的笔记他下次认不出来
-        title: title.trim() || undefined,
-        body,
-        tags: splitTags(tagsText),
-      });
+      const n = await api.saveNote(
+        {
+          id: current.id,
+          // 标题留空时交给后端从正文首行取一句 —— 一篇没名字的笔记他下次认不出来
+          title: title.trim() || undefined,
+          body,
+          tags: splitTags(tagsText),
+        },
+        room,
+      );
       setCurrent(n);
       setDirty(false);
       setErr("");
@@ -175,7 +188,7 @@ export function NotePage({
     } finally {
       setSaving(false);
     }
-  }, [current, title, body, tagsText, q, refresh]);
+  }, [current, title, body, tagsText, q, refresh, room]);
 
   // 自动保存：停手一秒多就落库。显式的保存按钮也留着 ——
   // 自动保存是「不用惦记」，按钮是「我现在就要确定它写进去了」，两件事都要有
@@ -187,7 +200,7 @@ export function NotePage({
 
   const create = async () => {
     try {
-      const n = await api.saveNote({ title: "新的笔记", body: "" });
+      const n = await api.saveNote({ title: "新的笔记", body: "" }, room);
       await refresh(q.trim());
       await open(n.id);
       titleRef.current?.focus();
@@ -201,14 +214,14 @@ export function NotePage({
     if (!window.confirm(`删掉《${n.title}》？这一篇和它的几版旧稿一起没了。`))
       return;
     try {
-      await api.deleteNote(n.id);
-      const rows = await api.notes(q.trim() || undefined);
+      await api.deleteNote(n.id, room);
+      const rows = await api.notes(q.trim() || undefined, undefined, room);
       setList(rows);
       const next = rows[0]?.id;
       if (next) await open(next);
       else {
         setCurrent(null);
-        void api.focusNote("").catch(() => {});
+        void api.focusNote("", room).catch(() => {});
       }
     } catch (e) {
       setErr((e as Error).message);
@@ -218,7 +231,10 @@ export function NotePage({
   const togglePin = async () => {
     if (!current) return;
     try {
-      const n = await api.saveNote({ id: current.id, pinned: !current.pinned });
+      const n = await api.saveNote(
+        { id: current.id, pinned: !current.pinned },
+        room,
+      );
       setCurrent(n);
       void refresh(q.trim());
     } catch (e) {
@@ -233,7 +249,7 @@ export function NotePage({
       return;
     }
     try {
-      setRevs(await api.noteRevisions(current.id));
+      setRevs(await api.noteRevisions(current.id, room));
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -248,7 +264,7 @@ export function NotePage({
     )
       return;
     try {
-      const n = await api.restoreNote(current.id, r.seq);
+      const n = await api.restoreNote(current.id, r.seq, room);
       if (n) {
         loading.current = true;
         setTitle(n.title);
@@ -257,7 +273,7 @@ export function NotePage({
         setCurrent(n);
         setDirty(false);
       }
-      setRevs(await api.noteRevisions(current.id));
+      setRevs(await api.noteRevisions(current.id, room));
       void refresh(q.trim());
     } catch (e) {
       setErr((e as Error).message);

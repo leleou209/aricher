@@ -5,18 +5,23 @@
 //   read_url  —— 我已经知道是哪一页，只要那一页的正文
 //   browse    —— 我要在一个站里走一走：看它有什么、页面上能点去哪
 //
-// 抓取本身优先走 Tavily；没配 key 时退化为受控直连 + 正文抽取，
-// 抽取结果太少再试 Jina Reader（它能执行 JS，覆盖前端渲染的站）。
-// 搜索同理：有 key 走 Tavily，没 key 退到 DuckDuckGo 的免 key 通道——
+// 搜索走哪家由 search_config 表说了算（Tavily / Brave，设置页可配）：
+// 配了 key 就走配置的通道，没配（或通道挂了）退化为 DuckDuckGo 免 key 通道——
 // 否则「不确定的我就先搜一下」在没配 key 的环境里就是一句空头承诺。
+// 正文抓取的付费档只认 Tavily extract（Brave 没有抓取接口）；
+// 抓取本身退化为受控直连 + 正文抽取，抽取结果太少再试 Jina Reader
+// （它能执行 JS，覆盖前端渲染的站）。
 
 import { tool } from "ai";
 import puppeteer from "@cloudflare/puppeteer";
 import { z } from "zod";
+import type { SearchConfig } from "../agent/searchConfigs";
+import { DEFAULT_SEARCH_CONFIG } from "../agent/searchConfigs";
 import type { ToolCtx } from "./types";
 
 const TAVILY_SEARCH = "https://api.tavily.com/search";
 const TAVILY_EXTRACT = "https://api.tavily.com/extract";
+const BRAVE_SEARCH = "https://api.search.brave.com/res/v1/web/search";
 const JINA_READER = "https://r.jina.ai/";
 const MAX_CHARS = 6000;
 const UA = "Mozilla/5.0 (compatible; CoworkAgent/2.0)";
@@ -196,6 +201,72 @@ async function tavily(
   if (!r.ok)
     throw new Error(`Tavily ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
+}
+
+// ── Brave 通道 ─────────────────────────────────────────
+//
+// Brave Search API：GET 一次、X-Subscription-Token 头带钥匙，没有摘要生成
+// 但结果快、独立索引。freshness 是它的时间过滤记号（pd/pw/pm/py），
+// 和 Tavily 的 time_range 用词不同，在这层翻译。
+
+interface BraveResponse {
+  web?: {
+    results?: Array<{
+      title?: string;
+      url?: string;
+      description?: string;
+      age?: string;
+    }>;
+  };
+}
+
+/** Brave 的 freshness 记号。给了 timeRange 就翻译，没给不传（默认全时段） */
+export function braveFreshness(
+  t?: "day" | "week" | "month" | "year",
+): string | null {
+  switch (t) {
+    case "day":
+      return "pd";
+    case "week":
+      return "pw";
+    case "month":
+      return "pm";
+    case "year":
+      return "py";
+    default:
+      return null;
+  }
+}
+
+/** 跑一次 Brave 网页搜索，收成和 Tavily 同形的条目列表（title/url/content） */
+export async function braveSearch(
+  query: string,
+  key: string,
+  maxResults: number,
+  timeRange?: "day" | "week" | "month" | "year",
+): Promise<FreeHit[]> {
+  const u = new URL(BRAVE_SEARCH);
+  u.searchParams.set("q", query);
+  u.searchParams.set("count", String(Math.min(Math.max(maxResults, 1), 20)));
+  const fresh = braveFreshness(timeRange);
+  if (fresh) u.searchParams.set("freshness", fresh);
+  const r = await fetch(u, {
+    headers: {
+      Accept: "application/json",
+      "X-Subscription-Token": key,
+      "User-Agent": UA,
+    },
+  });
+  if (!r.ok)
+    throw new Error(`Brave ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = (await r.json()) as BraveResponse;
+  return (d.web?.results || [])
+    .filter((x) => x.url)
+    .map((x) => ({
+      title: x.title || x.url!,
+      url: x.url!,
+      content: x.description || "",
+    }));
 }
 
 /** Jina Reader：前端渲染的站直接抓是空壳，这里让它替我们把页面跑一遍 */
@@ -460,9 +531,33 @@ async function freeSearch(a: {
   );
 }
 
+/** 域名白/黑名单过滤 + 截到条数上限。付费通道共用这一套（免费通道在 freeSearch 内联） */
+function filterHits(
+  hits: FreeHit[],
+  a: {
+    includeDomains?: string[];
+    excludeDomains?: string[];
+    maxResults?: number;
+  },
+): FreeHit[] {
+  let out = hits;
+  if (a.includeDomains?.length) {
+    const allow = a.includeDomains;
+    out = out.filter((h) => allow.some((d) => hostMatch(h.url, d)));
+  }
+  if (a.excludeDomains?.length) {
+    const deny = a.excludeDomains;
+    out = out.filter((h) => !deny.some((d) => hostMatch(h.url, d)));
+  }
+  return a.maxResults ? out.slice(0, a.maxResults) : out;
+}
+
 /**
  * 跑一次检索，返回给人看的文本。
  * 抽成普通函数是因为「盯梢」也要用同一套——两处各写一份，早晚会走偏。
+ *
+ * 通道由 cfg 决定（search_config 表）：Tavily / Brave 配了钥匙就走；
+ * 通道挂了或没配钥匙，静默退到免费通道，别让一次搜索失败打断整轮对话。
  */
 export async function runSearch(
   env: Env,
@@ -475,10 +570,18 @@ export async function runSearch(
     includeDomains?: string[];
     excludeDomains?: string[];
   },
+  cfg: SearchConfig = DEFAULT_SEARCH_CONFIG,
 ): Promise<string> {
   const maxResults = a.maxResults ?? 5;
-  const key = env.TAVILY_API_KEY;
-  if (key) {
+  const vars = env as unknown as Record<string, string | undefined>;
+  const key = cfg.keySecret ? vars[cfg.keySecret] : undefined;
+  // 兜底要留痕：key 压根没接上 / 通道挂了 / 空手而归，都退到免费通道 ——
+  // 但静默退法让人只能对着结果猜「是不是 key 没调度」。返回文本里带一句为什么，
+  // 她会顺着念给用户听，问题当场现形
+  let fallbackWhy = key
+    ? ""
+    : `（备注：主通道没接上 —— 配置的 keySecret「${cfg.keySecret || "空"}」在这台机器上没有对应的 secret，本次走免费通道）`;
+  if (key && cfg.format === "tavily") {
     const body: Record<string, unknown> = {
       query: a.query,
       search_depth: a.depth ?? "basic",
@@ -506,11 +609,35 @@ export async function runSearch(
         const head = data.answer ? `💡 摘要：${data.answer}\n\n` : "";
         return head + lines.join("\n\n");
       }
+      fallbackWhy = "（备注：Tavily 通了但一条结果都没给，本次走免费通道）";
     } catch {
-      // 配额用尽 / 网络问题：静默退到免费通道，别让一次搜索失败打断整轮对话
+      // 配额用尽 / 网络问题：退到免费通道，别让一次搜索失败打断整轮对话 ——
+      // 但要说清退了，不让人对着结果猜
+      fallbackWhy =
+        "（备注：Tavily 调用失败（多半是配额或鉴权），本次走免费通道）";
     }
   }
-  return freeSearch({ ...a, maxResults });
+  if (key && cfg.format === "brave") {
+    try {
+      const hits = await braveSearch(a.query, key, maxResults, a.timeRange);
+      const kept = filterHits(hits, { ...a, maxResults });
+      if (kept.length) {
+        const lines = kept.map((h, i) => {
+          const snip = h.content ? h.content.slice(0, 400) : "(无摘要)";
+          return `${i + 1}. ${h.title}\n${snip}\n🔗 ${h.url}`;
+        });
+        return (
+          `（Brave 独立索引，只有摘要没有全文；要细节就 read_url 打开其中一条）\n\n` +
+          lines.join("\n\n")
+        );
+      }
+      fallbackWhy = "（备注：Brave 通了但一条结果都没给，本次走免费通道）";
+    } catch {
+      fallbackWhy = "（备注：Brave 调用失败，本次走免费通道）";
+    }
+  }
+  const free = await freeSearch({ ...a, maxResults });
+  return fallbackWhy ? `${fallbackWhy}\n\n${free}` : free;
 }
 
 /**
@@ -668,17 +795,22 @@ async function browserRead(
 /**
  * 抓一个网页的正文：Tavily extract → 直连抽取 → Browser Run 渲染 → Jina 兜底。
  * read_url 和盯梢共用，所以这里不裁剪长度，调用方按自己的需要截。
+ * 付费档只认 Tavily extract（Brave 没有抓取接口）；搜索通道换成 Brave 时
+ * 抓取自动从直连起步，不多花一份没意义的钥匙。
  * 真的什么都拿不到才抛错，抛出来的话调用方原样告诉用户。
  */
 export async function fetchPageText(
   env: Env,
   url: string,
   opts: { query?: string; depth?: "basic" | "advanced" } = {},
+  cfg: SearchConfig = DEFAULT_SEARCH_CONFIG,
 ): Promise<{ url: string; text: string; rendered: boolean }> {
   const target = assertPublicUrl(
     url.startsWith("http") ? url : "https://" + url,
   ).toString();
-  const key = env.TAVILY_API_KEY;
+  const vars = env as unknown as Record<string, string | undefined>;
+  const key =
+    cfg.format === "tavily" && cfg.keySecret ? vars[cfg.keySecret] : undefined;
   if (key) {
     try {
       const body: Record<string, unknown> = {
@@ -727,7 +859,7 @@ export function searchTools(ctx: ToolCtx) {
       description:
         "联网搜索。新闻、书评、学术、事实核查、任何不确定的内容都必须先搜索，不要凭记忆回答。" +
         "depth=advanced 更详细但消耗 2 倍额度，一般用 basic 即可。" +
-        "没配 Tavily key 时自动走免费通道，结果只有标题和摘要，要细节再用 read_url 打开。",
+        "没配搜索钥匙时自动走免费通道，结果只有标题和摘要，要细节再用 read_url 打开。",
       inputSchema: z.object({
         query: z.string().describe("搜索关键词，用自然语言描述你想知道什么"),
         depth: z
@@ -745,7 +877,7 @@ export function searchTools(ctx: ToolCtx) {
           .describe("只在这些站点内搜索"),
         excludeDomains: z.array(z.string()).optional(),
       }),
-      execute: async (a) => runSearch(ctx.env, a),
+      execute: async (a) => runSearch(ctx.env, a, await ctx.searchConfig()),
     }),
 
     read_url: tool({
@@ -762,10 +894,12 @@ export function searchTools(ctx: ToolCtx) {
       }),
       execute: async (a) => {
         try {
-          const page = await fetchPageText(ctx.env, a.url, {
-            query: a.query,
-            depth: a.depth,
-          });
+          const page = await fetchPageText(
+            ctx.env,
+            a.url,
+            { query: a.query, depth: a.depth },
+            await ctx.searchConfig(),
+          );
           const tag = page.rendered ? "（渲染后）" : "";
           return `📄 ${page.url}${tag}\n\n${clipped(page.text)}`;
         } catch (e) {

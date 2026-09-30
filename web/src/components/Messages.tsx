@@ -61,6 +61,10 @@ function ToolCall({
   const zh = toolMeta(name).zh;
   const input = getToolInput(part);
   const output = getToolOutput(part);
+  // 出错的具体死因（中断兜底 / 工具抛的错）：光一个红字「出错」没人知道发生了什么，
+  // 摆出来才能判断是该重试、该简化，还是该来报 bug
+  const errorText = (part as unknown as { errorText?: string; state?: string })
+    .errorText;
   const running = meta.cls === "run";
   /**
    * 这一轮早结束了，卡片却还停在「运行中」—— 那不是他还在忙，是结果根本没传回来
@@ -103,10 +107,151 @@ function ToolCall({
         </span>
       </summary>
       {input !== undefined && <div className="tool-in">{short(input)}</div>}
+      {meta.cls === "err" && errorText && (
+        <div className="tool-err">{errorText}</div>
+      )}
       {!running && <Drawn output={output} />}
       {output !== undefined && <div className="tool-out">{short(output)}</div>}
     </details>
   );
+}
+
+// ── mermaid：她写的源码，渲染器摆线 ──────────────────────
+// 动态 import 让首屏不背 mermaid 的包体 —— 只有真出现图时才拉渲染器；
+// 渲染结果按源码缓存，历史消息重渲时直接复用，不重画。
+
+const mermaidSvgCache = new Map<string, string>();
+let mermaidMod: Promise<(typeof import("mermaid"))["default"]> | null = null;
+let mermaidThemeKey = "";
+
+function loadMermaid(): Promise<(typeof import("mermaid"))["default"]> {
+  // mermaid 的主题是全局配置，初始化时定死 —— 外观主题变了就得重初始化、旧渲染作废
+  const theme = document.documentElement.dataset.theme || "paper";
+  const dark =
+    theme === "dark" ||
+    (theme === "system" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const key = dark ? "dark" : "neutral";
+  if (!mermaidMod || mermaidThemeKey !== key) {
+    if (mermaidMod) mermaidSvgCache.clear();
+    mermaidThemeKey = key;
+    mermaidMod = import("mermaid").then((m) => {
+      m.default.initialize({
+        startOnLoad: false,
+        theme: key,
+        securityLevel: "strict",
+        suppressErrorRendering: true,
+      });
+      return m.default;
+    });
+  }
+  return mermaidMod;
+}
+
+function svgToDataUrl(svg: string): string {
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
+/**
+ * 一段 mermaid 源码 → 一张图。渲染失败把错误摆出来而不是吞掉 ——
+ * 空卡片没人知道为什么，摆出来她改一版重发就是。
+ */
+function MermaidView({ source, alt }: { source: string; alt: string }) {
+  const [svg, setSvg] = useState(() => mermaidSvgCache.get(source) ?? "");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    const cached = mermaidSvgCache.get(source);
+    if (cached) {
+      setSvg(cached);
+      setErr("");
+      return;
+    }
+    setSvg("");
+    let alive = true;
+    loadMermaid()
+      .then(async (mm) => {
+        const { svg: out } = await mm.render(
+          "mmd-" + Math.random().toString(36).slice(2),
+          source,
+        );
+        if (mermaidSvgCache.size > 200) mermaidSvgCache.clear();
+        mermaidSvgCache.set(source, out);
+        if (alive) {
+          setSvg(out);
+          setErr("");
+        }
+      })
+      .catch((e) => {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [source]);
+
+  if (err)
+    return (
+      <div className="mermaid-view mermaid-note" title={err}>
+        <Icon name="image" size={13} />
+        <span>
+          这张图没渲出来：
+          {err.length > 140 ? err.slice(0, 140) + "…" : err}
+        </span>
+      </div>
+    );
+  if (!svg)
+    return (
+      <div className="mermaid-view mermaid-note">
+        <span className="spinner" aria-hidden="true" />
+        <span>摆图中…</span>
+      </div>
+    );
+  return (
+    <div
+      className="mermaid-view"
+      title="点开看大图"
+      onClick={() => zoomIn(svgToDataUrl(svg), alt)}
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
+/** 云盘里的 .mmd：先取回源码再渲 —— 图是记忆和 send_image 的凭据，源码必须落在桶里 */
+function MermaidFile({ src, alt }: { src: string; alt: string }) {
+  const [source, setSource] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let alive = true;
+    setSource("");
+    setErr("");
+    fetch(src)
+      .then((r) =>
+        r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)),
+      )
+      .then((t) => {
+        if (alive) setSource(t);
+      })
+      .catch((e) => {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [src]);
+  if (err)
+    return (
+      <div className="mermaid-view mermaid-note">
+        <span>源码没取回来：{err}</span>
+      </div>
+    );
+  if (!source)
+    return (
+      <div className="mermaid-view mermaid-note">
+        <span className="spinner" aria-hidden="true" />
+        <span>取图中…</span>
+      </div>
+    );
+  return <MermaidView source={source} alt={alt} />;
 }
 
 /**
@@ -121,6 +266,9 @@ function Drawn({ output }: { output: unknown }) {
   const m = /!\[[^\]]*\]\((\/api\/files\/[^)\s]+)\)/.exec(output);
   if (!m) return null;
   const src = m[1];
+  // .mmd 是 mermaid 源码，得取回来渲染；.svg（旧图）和位图照旧当 <img>
+  if (/\.mmd($|\?)/.test(src))
+    return <MermaidFile src={src} alt="画出来的图" />;
   return (
     <img
       className="tool-img"
@@ -160,18 +308,32 @@ function CodeBlock({ children }: { children?: ReactNode }) {
       .catch(() => {});
   };
 
+  const header = (
+    <div className="code-header">
+      <span className="code-lang">{lang}</span>
+      <button
+        className="code-copy-btn"
+        onClick={copy}
+        title={copied ? "已复制" : "复制代码"}
+      >
+        <Icon name={copied ? "check" : "copy"} size={13} />
+      </button>
+    </div>
+  );
+
+  // 正文里出现的 mermaid 代码块直接出图 —— GitHub / Cursor 都这么干；
+  // 源码还在，复制按钮照旧（他想拿去别处渲染时用得上）
+  if (lang === "mermaid")
+    return (
+      <div className="code-block">
+        {header}
+        <MermaidView source={text} alt="示意图" />
+      </div>
+    );
+
   return (
     <div className="code-block">
-      <div className="code-header">
-        <span className="code-lang">{lang}</span>
-        <button
-          className="code-copy-btn"
-          onClick={copy}
-          title={copied ? "已复制" : "复制代码"}
-        >
-          <Icon name={copied ? "check" : "copy"} size={13} />
-        </button>
-      </div>
+      {header}
       <pre className="code-body">{child}</pre>
     </div>
   );
@@ -198,15 +360,21 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
           ),
           // 答话里带的图点开能看大图：最多摆到 420px，
           // 画的是什么都看不清 —— 而他画图本来就是要给人看的
-          img: ({ node, alt, ...rest }) => (
-            <img
-              {...rest}
-              alt={alt}
-              loading="lazy"
-              title="点开看大图"
-              onClick={() => zoomIn(String(rest.src || ""), alt || "")}
-            />
-          ),
+          img: ({ node, alt, ...rest }) => {
+            const src = String(rest.src || "");
+            // diagram 出的 .mmd 行也是走 markdown 图片的写法 —— 但那不是图，是源码，得渲染
+            if (/\.mmd($|\?)/.test(src))
+              return <MermaidFile src={src} alt={alt || "示意图"} />;
+            return (
+              <img
+                {...rest}
+                alt={alt}
+                loading="lazy"
+                title="点开看大图"
+                onClick={() => zoomIn(String(rest.src || ""), alt || "")}
+              />
+            );
+          },
           pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         }}
       >
@@ -618,11 +786,14 @@ function authorLabel(author: string, role: Role): string {
 function Comments({
   messageId,
   role,
+  room,
   onClose,
   onPosted,
 }: {
   messageId: string;
   role: Role;
+  /** 这条消息所在的场屋。评论读写都得点名，不然后端会落到人屋找不到这条 */
+  room?: string;
   onClose: () => void;
   onPosted: () => void;
 }) {
@@ -633,10 +804,10 @@ function Comments({
 
   const load = useCallback(() => {
     api
-      .comments(messageId)
+      .comments(messageId, room)
       .then(setList)
       .catch((e: Error) => setErr(e.message));
-  }, [messageId]);
+  }, [messageId, room]);
 
   useEffect(load, [load]);
 
@@ -646,7 +817,7 @@ function Comments({
     setBusy(true);
     setErr("");
     try {
-      await api.comment(messageId, t);
+      await api.comment(messageId, t, room);
       setText("");
       load();
       onPosted();
@@ -805,6 +976,7 @@ export function Messages({
   role,
   thoughts,
   speakingId,
+  room,
   onSpeak,
   onRetry,
   onFlash,
@@ -815,6 +987,8 @@ export function Messages({
   /** 这一轮他在想什么（服务端隔几秒翻一句过来）。只在生成期间有 */
   thoughts: string[];
   speakingId?: string;
+  /** 当前连着的屋。反馈（赞/踩/标重/评论）都得跟着它走 —— 消息住在场屋里 */
+  room?: string;
   onSpeak?: (id: string, text: string) => void;
   onRetry?: (id: string) => void;
   onFlash: (text: string) => void;
@@ -828,10 +1002,10 @@ export function Messages({
 
   const reload = useCallback(() => {
     api
-      .feedback()
+      .feedback(room)
       .then(setFeedback)
       .catch(() => {});
-  }, []);
+  }, [room]);
 
   // 消息数变化（新消息落库）与流式结束都要重拉：徽标跟着消息走
   useEffect(() => {
@@ -841,7 +1015,7 @@ export function Messages({
   const onVote = useCallback(
     async (id: string, value: 1 | -1) => {
       try {
-        const r = await api.vote(id, value);
+        const r = await api.vote(id, value, room);
         reload();
         if (r.value === -1) onFlash("已记下，ericher 会避开这个方向");
         else if (r.value === null) onFlash("已取消");
@@ -849,20 +1023,20 @@ export function Messages({
         onFlash((e as Error).message);
       }
     },
-    [reload, onFlash],
+    [reload, onFlash, room],
   );
 
   const onFlag = useCallback(
     async (id: string) => {
       try {
-        const r = await api.flag(id);
+        const r = await api.flag(id, room);
         reload();
         onFlash(r.flagged ? "已标重，ericher 下一轮会重视这条" : "已取消标重");
       } catch (e) {
         onFlash((e as Error).message);
       }
     },
-    [reload, onFlash],
+    [reload, onFlash, room],
   );
 
   if (!messages.length) {
@@ -934,6 +1108,7 @@ export function Messages({
         <Comments
           messageId={openId}
           role={role}
+          room={room}
           onClose={() => setOpenId(null)}
           onPosted={reload}
         />

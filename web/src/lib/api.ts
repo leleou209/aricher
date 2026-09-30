@@ -7,6 +7,7 @@
 import type {
   Attachment,
   ChatState,
+  DrawConfig,
   FeedbackSummary,
   MemEntry,
   ModelEntry,
@@ -19,6 +20,7 @@ import type {
   R2File,
   RecallHit,
   Reminder,
+  SearchConfig,
   Sensitivity,
   SessionMeta,
   SessionMemoryGroup,
@@ -149,16 +151,19 @@ export const api = {
   /**
    * 调思考强度。单开一条而不是复用 patchConfig：来客也该能调强度，
    * 但 patchConfig 那道门后面还站着人格提示词和任务清单。
+   * room：调哪间屋的开关。多场并行后每场各有各的强度 —— 空着 = 本人那间人屋，
+   * 连在场屋上时必须点名，不然调的是人屋、眼前这场纹丝不动。
    */
-  setThinkMode: (mode: "normal" | "deep") =>
-    req<ChatState>("/api/think", json("POST", { mode })),
+  setThinkMode: (mode: "normal" | "deep", room?: string) =>
+    req<ChatState>("/api/think", json("POST", { mode, room })),
 
   /**
-   * 收起一张提问卡。答案不从这里走 —— 他答的那句话是当普通消息发出去的，
-   * 这里只负责把卡片拿掉（他已经看到了答案，卡片留着反而会让他以为还欠着一句）。
+   * 回答一张提问卡：他的回答会 resolve 那次挂起的 ask 工具调用，
+   * 模型带着答案在同一轮工作流里接着跑。room 定参送进挂起的场屋
+   * （他可能切到别的场才想起来答）；answer 空串 = 先不答。
    */
-  answerAsk: (id: string) =>
-    req<ChatState>("/api/ask/answer", json("POST", { id })),
+  answerAsk: (id: string, answer: string, room?: string) =>
+    req<ChatState>("/api/ask/answer", json("POST", { id, answer, room })),
 
   // ── 记忆书架 ──
   memories: (shelf?: Shelf, includeSuperseded = false) =>
@@ -245,12 +250,31 @@ export const api = {
   publicLedger: () => req<MemEntry[]>("/api/memory/public"),
 
   // ── 文件（R2）──
-  files: () => req<{ files: R2File[]; count: number }>("/api/files"),
+  // scope：这次清单的划界前缀（来客 = 自己房间前缀，管理员 = 桶根）。
+  // 前端拼树、算「完整 key」都靠它 —— 服务器只回原料，目录是 key 里的路径
+  files: () =>
+    req<{ files: R2File[]; count: number; scope: string }>("/api/files"),
+  mkdir: (path: string) =>
+    req<{ ok: boolean; key: string }>(
+      "/api/files/mkdir",
+      json("POST", { path }),
+    ),
+  move: (from: string, to: string) =>
+    req<{ ok: boolean; moved?: number }>(
+      "/api/files/move",
+      json("POST", { from, to }),
+    ),
   deleteFile: (key: string) =>
     req<{ ok: boolean }>("/api/delete", json("POST", { key })),
-  upload: (file: File) => {
+  deleteFolder: (folder: string) =>
+    req<{ ok: boolean; deleted?: number }>(
+      "/api/delete",
+      json("POST", { folder }),
+    ),
+  upload: (file: File, folder = "") => {
     const form = new FormData();
     form.append("file", file);
+    if (folder) form.append("folder", folder);
     return req<{ key: string; name: string; type: string; size: number }>(
       "/api/upload",
       {
@@ -342,33 +366,42 @@ export const api = {
     ),
 
   // ── 笔记本：管理员和 ericher 共用的本子（仅管理员）──
-  notes: (q?: string, tag?: string) =>
+  // room：本子跟着场走（每场自带资产）——连在哪间场屋上，读写的就是哪一间的本子；
+  // 空着 = 本人那间人屋的本子
+  notes: (q?: string, tag?: string, room?: string) =>
     req<NoteMeta[]>(
-      `/api/notes?${q ? `q=${encodeURIComponent(q)}&` : ""}${tag ? `tag=${encodeURIComponent(tag)}` : ""}`,
+      `/api/notes?${q ? `q=${encodeURIComponent(q)}&` : ""}${tag ? `tag=${encodeURIComponent(tag)}` : ""}${room ? `room=${encodeURIComponent(room)}` : ""}`,
     ),
-  readNote: (id: string) =>
-    req<Note | null>(`/api/notes/read?id=${encodeURIComponent(id)}`),
+  readNote: (id: string, room?: string) =>
+    req<Note | null>(
+      `/api/notes/read?id=${encodeURIComponent(id)}${room ? `&room=${encodeURIComponent(room)}` : ""}`,
+    ),
   /** 落库。不给 id 就是新建一篇。署名固定成「管理员」——写这条路只有主人走得通 */
-  saveNote: (input: {
-    id?: string;
-    title?: string;
-    body?: string;
-    tags?: string[];
-    pinned?: boolean;
-  }) => req<Note>("/api/notes/save", json("POST", input)),
-  deleteNote: (id: string) =>
-    req<boolean>("/api/notes/delete", json("POST", { id })),
+  saveNote: (
+    input: {
+      id?: string;
+      title?: string;
+      body?: string;
+      tags?: string[];
+      pinned?: boolean;
+    },
+    room?: string,
+  ) => req<Note>("/api/notes/save", json("POST", { ...input, room })),
+  deleteNote: (id: string, room?: string) =>
+    req<boolean>("/api/notes/delete", json("POST", { id, room })),
   /**
    * 告诉他「我翻开了哪一篇」（空串 = 合上了）。
    * 这一下不只是界面状态：他下一轮就知道你指着屏幕说的「这篇」是哪篇。
    */
-  focusNote: (id: string) =>
-    req<ChatState>("/api/notes/focus", json("POST", { id })),
+  focusNote: (id: string, room?: string) =>
+    req<ChatState>("/api/notes/focus", json("POST", { id, room })),
   /** 某篇的历史版本，最近的在前 —— ericher 改写过之后想退回去的时候用它 */
-  noteRevisions: (id: string) =>
-    req<NoteRevision[]>(`/api/notes/revisions?id=${encodeURIComponent(id)}`),
-  restoreNote: (id: string, seq: number) =>
-    req<Note | null>("/api/notes/restore", json("POST", { id, seq })),
+  noteRevisions: (id: string, room?: string) =>
+    req<NoteRevision[]>(
+      `/api/notes/revisions?id=${encodeURIComponent(id)}${room ? `&room=${encodeURIComponent(room)}` : ""}`,
+    ),
+  restoreNote: (id: string, seq: number, room?: string) =>
+    req<Note | null>("/api/notes/restore", json("POST", { id, seq, room })),
 
   // ── 提醒（主动能力：到点 ericher 自己回来找你）──
   reminders: () => req<Reminder[]>("/api/reminders"),
@@ -453,11 +486,17 @@ export const api = {
     }),
 
   // ── 版本与更新检查 ──
-  /** 拿本机构建号去对开源仓库的最新提交；latest 是对方 main 分支最新一笔 */
+  /** 拿本地版本号去对开源仓库的版本号（提交对不上号是攒批推送的常态，不作数）；
+   *  latest 是对方 main 的版本号与最新一笔提交 */
   updateCheck: async () =>
     bizOk<{
       upToDate: boolean;
-      latest: { hash: string; message: string; date: string } | null;
+      latest: {
+        version: string;
+        hash: string;
+        message: string;
+        date: string;
+      } | null;
     }>(await req<unknown>("/api/update-check"), "检查更新失败"),
 
   // ── 模型目录（供应商 + 模型条目两级；仅管理员）──
@@ -518,7 +557,7 @@ export const api = {
       await req<unknown>("/api/model-configs/entries", json("POST", input)),
       "添加模型失败",
     ),
-  /** 含 { id, active: true } = 把这个模型设为当前载入的 */
+  /** 含 { id, active: true } = 指派为普通模式的模型（回复风格页的指派就走这里） */
   modelEntryPatch: async (
     input: Partial<
       Pick<ModelEntry, "model" | "maxOutput" | "contextWindow" | "active">
@@ -595,6 +634,48 @@ export const api = {
       method: "DELETE",
     }),
 
+  // ── 绘图配置（出图三档各用哪家；仅管理员）──
+  drawConfigs: async (): Promise<{
+    configs: DrawConfig[];
+    keySecrets: string[];
+  }> => {
+    const r = bizOk<{
+      configs?: DrawConfig[];
+      keySecrets?: string[];
+    }>(await req<unknown>("/api/draw-configs"), "读取绘图配置失败");
+    return {
+      configs: Array.isArray(r?.configs) ? r.configs : [],
+      keySecrets: Array.isArray(r?.keySecrets) ? r.keySecrets : [],
+    };
+  },
+  drawConfigPatch: async (
+    input: Partial<Omit<DrawConfig, "tier">> & { tier: DrawConfig["tier"] },
+  ) =>
+    bizOk<DrawConfig>(
+      await req<unknown>("/api/draw-configs", json("PATCH", input)),
+      "保存绘图配置失败",
+    ),
+
+  // ── 搜索配置（联网搜索走哪家、用哪把钥匙；仅管理员）──
+  searchConfig: async (): Promise<{
+    config: SearchConfig;
+    keySecrets: string[];
+  }> => {
+    const r = bizOk<{
+      config?: SearchConfig;
+      keySecrets?: string[];
+    }>(await req<unknown>("/api/search-configs"), "读取搜索配置失败");
+    return {
+      config: r?.config ?? { format: "tavily", keySecret: "" },
+      keySecrets: Array.isArray(r?.keySecrets) ? r.keySecrets : [],
+    };
+  },
+  searchConfigPatch: (input: Partial<SearchConfig>) =>
+    bizOk<SearchConfig>(
+      req<unknown>("/api/search-configs", json("PATCH", input)),
+      "保存搜索配置失败",
+    ),
+
   /** 今日写额度：谁在吃那 10 万行 */
   writes: () => req<WriteReport>("/api/writes"),
   /** 额度总览：SQL 读写 + AI neurons + Vectorize + 官方校准 */
@@ -634,25 +715,34 @@ export const api = {
 
   // ── 动作 ──
   organize: () => req<string>("/api/organize", { method: "POST" }),
-  /** 打断：把这一轮正在生成的回答停下来（服务端那一轮，客户端自己也会断） */
-  stop: () => req<boolean>("/api/stop", { method: "POST" }),
+  /**
+   * 打断：把这一轮正在生成的回答停下来（服务端那一轮，客户端自己也会断）。
+   * room：正在说话的那间屋 —— REST 没有连接语义，多场并行后连接可能挂在场屋上，
+   * 不点名就会去人屋里找一场没人说话的对话干着急。
+   */
+  stop: (room?: string) => req<boolean>("/api/stop", json("POST", { room })),
   clear: () => req<{ ok: boolean }>("/api/clear", { method: "POST" }),
 
   // ── 消息反馈（赞 / 踩 / 评论）──
-  feedback: () => req<FeedbackSummary>("/api/feedback"),
+  // room：反馈跟着场走。消息实际住在一场一间的场屋里，连接挂在场屋上；不带 room
+  // 的话后端会落到人屋，徽标永远 0、点了也没反应。空着 = 本人那间人屋。
+  feedback: (room?: string) =>
+    req<FeedbackSummary>(
+      `/api/feedback${room ? `?room=${encodeURIComponent(room)}` : ""}`,
+    ),
   /** 同值再投 = 取消；返回生效后的票值，null 表示已取消 */
-  vote: (messageId: string, value: 1 | -1) =>
+  vote: (messageId: string, value: 1 | -1, room?: string) =>
     req<{ value: number | null }>(
       "/api/vote",
-      json("POST", { messageId, value }),
+      json("POST", { messageId, value, room }),
     ),
-  comments: (messageId: string) =>
+  comments: (messageId: string, room?: string) =>
     req<MsgComment[]>(
-      `/api/comment?messageId=${encodeURIComponent(messageId)}`,
+      `/api/comment?messageId=${encodeURIComponent(messageId)}${room ? `&room=${encodeURIComponent(room)}` : ""}`,
     ),
-  comment: (messageId: string, content: string) =>
-    req<MsgComment>("/api/comment", json("POST", { messageId, content })),
+  comment: (messageId: string, content: string, room?: string) =>
+    req<MsgComment>("/api/comment", json("POST", { messageId, content, room })),
   /** 标重开关：给管理员自己的发言打「要重视」的标记，再点一次取消 */
-  flag: (messageId: string) =>
-    req<{ flagged: boolean }>("/api/flag", json("POST", { messageId })),
+  flag: (messageId: string, room?: string) =>
+    req<{ flagged: boolean }>("/api/flag", json("POST", { messageId, room })),
 };

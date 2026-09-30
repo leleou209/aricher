@@ -50,6 +50,12 @@ export interface SessionMeta {
    * 界面上拿它说「上次回头看是几时」，也是「这场我有印象」的证据。
    */
   recapAt: string;
+  /**
+   * 这一场住在哪间屋。空串 = 本屋宿主的场（老式：切过去靠屋内 loadSessionMessages）；
+   * 非空 = 场屋名（room--sessionId，一个会话一间完整运行时，切过去 = 前端换连接）。
+   * 只有目录屋（人屋）里的行会带场屋名 —— 那是指路的，不是存储。
+   */
+  home: string;
 }
 
 interface SessionRow {
@@ -65,6 +71,7 @@ interface SessionRow {
   unread: number;
   recap_upto: number;
   recap_at: string;
+  home: string;
 }
 
 export function ensureSessionSchema(db: SqlTag): void {
@@ -142,6 +149,13 @@ export function ensureSessionSchema(db: SqlTag): void {
   } catch {
     // 列已存在
   }
+  // 场屋指路牌：这一场住在哪间屋。老场一律空串（= 本屋宿主的场），不用迁移 ——
+  // 屋为单位的老场照旧在屋里切，新开的场才各自有屋
+  try {
+    db`alter table sessions add column home text not null default ''`;
+  } catch {
+    // 列已存在
+  }
 }
 
 /**
@@ -171,11 +185,12 @@ const toMeta = (r: SessionRow): SessionMeta => ({
   named: !!r.named,
   unread: !!r.unread,
   recapAt: r.recap_at || "",
+  home: r.home || "",
 });
 
 export function listSessions(db: SqlTag): SessionMeta[] {
   const rows = db<SessionRow>`
-    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at,
+    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at, s.home,
       (select count(*) from session_messages m where m.session_id = s.id) as n
     from sessions s
     order by s.last_active desc`;
@@ -185,7 +200,7 @@ export function listSessions(db: SqlTag): SessionMeta[] {
 /** 来客看到的公开会话。归档过的从公开列表里收起 —— 主人都收起来了，还摆在外面给人读不合常理。 */
 export function listPublicSessions(db: SqlTag): SessionMeta[] {
   const rows = db<SessionRow>`
-    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at,
+    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at, s.home,
       (select count(*) from session_messages m where m.session_id = s.id) as n
     from sessions s
     where s.visibility = 'public' and s.archived = 0
@@ -195,7 +210,7 @@ export function listPublicSessions(db: SqlTag): SessionMeta[] {
 
 export function getSession(db: SqlTag, id: string): SessionMeta | null {
   const rows = db<SessionRow>`
-    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at,
+    select s.id, s.title, s.visibility, s.created, s.last_active, s.digest, s.archived, s.named, s.unread, s.recap_at, s.home,
       (select count(*) from session_messages m where m.session_id = s.id) as n
     from sessions s
     where s.id = ${id}`;
@@ -302,10 +317,13 @@ export function insertSession(
     visibility: SessionVisibility;
     created: string;
     named?: boolean;
+    /** 场屋指路牌（只在目录屋登记场屋时给；本屋自己的场不带） */
+    home?: string;
   },
 ): void {
-  db`insert into sessions (id, title, visibility, created, last_active, named)
-     values (${input.id}, ${input.title}, ${input.visibility}, ${input.created}, ${input.created}, ${input.named ? 1 : 0})`;
+  // or ignore：场屋落位回报是幂等登记，目录里已有的（点名开的场）不许被顶掉
+  db`insert or ignore into sessions (id, title, visibility, created, last_active, named, home)
+     values (${input.id}, ${input.title}, ${input.visibility}, ${input.created}, ${input.created}, ${input.named ? 1 : 0}, ${input.home || ""})`;
 }
 
 /**
@@ -521,4 +539,80 @@ export function searchMessages(db: SqlTag, q: string, limit = 8): RecallHit[] {
     });
   }
   return out;
+}
+
+// ── 场屋原话索引：recall 的跨场账本 ─────────────────────────
+//
+// 场屋的消息存在场屋自己那里，目录屋翻不到。这里给目录屋一张专供搜索的索引表：
+// 场屋轮尾把新落的消息（谁说的、说了什么）寄回一行 —— 消息本体不动，
+// 这边只是「可搜索的目录页」。行很小（正文截 500 字），只喂 recall 用。
+
+export interface RecallIndexRow {
+  /** 消息 id（UIMessage.id）：幂等键 */
+  id: string;
+  sessionId: string;
+  role: string;
+  text: string;
+  ts: string;
+}
+
+function ensureRecallIndex(db: SqlTag): void {
+  db`CREATE TABLE IF NOT EXISTS recall_index (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    ts TEXT NOT NULL
+  )`;
+  db`CREATE INDEX IF NOT EXISTS idx_recall_index_session ON recall_index(session_id)`;
+}
+
+/**
+ * 收场屋寄回的原话索引。INSERT OR IGNORE 按消息 id 幂等 ——
+ * 场屋重启后全量重寄一遍也不会写重，目录页多翻几遍还是同一本。
+ */
+export function insertRecallIndexRows(
+  db: SqlTag,
+  rows: RecallIndexRow[],
+): void {
+  if (!rows.length) return;
+  ensureRecallIndex(db);
+  for (const r of rows) {
+    if (!r || typeof r.id !== "string" || typeof r.text !== "string") continue;
+    if (!r.id || !r.text.trim()) continue;
+    db`INSERT OR IGNORE INTO recall_index (id, session_id, role, text, ts)
+       VALUES (${r.id}, ${r.sessionId || ""}, ${r.role || ""}, ${r.text}, ${r.ts || ""})`;
+  }
+}
+
+/**
+ * 搜场屋寄回的原话索引。join sessions 拿标题与活跃时刻 ——
+ * 场屋的目录行（落位登记过的）就在这边表里，join 得上；还没登记的行搜不到，可接受。
+ */
+export function searchRecallIndex(
+  db: SqlTag,
+  q: string,
+  limit = 8,
+): RecallHit[] {
+  ensureRecallIndex(db);
+  const rows = db<{
+    session_id: string;
+    text: string;
+    title: string;
+    last_active: string;
+    role: string;
+  }>`
+    select i.session_id, i.text, i.role, s.title, s.last_active
+    from recall_index i
+    join sessions s on s.id = i.session_id
+    where i.text like ${"%" + q + "%"} or s.title like ${"%" + q + "%"}
+    order by s.last_active desc
+    limit ${limit}`;
+  return rows.map((r) => ({
+    sessionId: r.session_id,
+    sessionTitle: r.title,
+    lastActive: r.last_active,
+    role: r.role,
+    message: r.text.slice(0, 500),
+  }));
 }

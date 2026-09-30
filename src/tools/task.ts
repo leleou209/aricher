@@ -12,21 +12,46 @@ export function taskTools(ctx: ToolCtx) {
     task: tool({
       description:
         "待办任务管理。list 列出全部；add 新建；update 改状态（索引从 0 开始）；delete 删除。",
-      inputSchema: z.object({
-        action: z.enum(["list", "add", "update", "delete"]),
-        title: z.string().optional().describe("add 时的任务标题"),
-        desc: z.string().optional().describe("add 时的补充说明"),
-        index: z
-          .number()
-          .int()
-          .min(0)
-          .optional()
-          .describe("update / delete 时的索引"),
-        status: z
-          .enum(["todo", "doing", "done"])
-          .optional()
-          .describe("update 时的新状态"),
-      }),
+      inputSchema: z
+        .object({
+          action: z.enum(["list", "add", "update", "delete"]),
+          title: z.string().optional().describe("add 时的任务标题"),
+          desc: z.string().optional().describe("add 时的补充说明"),
+          index: z
+            .number()
+            .int()
+            .min(0)
+            .optional()
+            .describe("update / delete 时的索引"),
+          status: z
+            .enum(["todo", "doing", "done"])
+            .optional()
+            .describe("update 时的新状态"),
+        })
+        .superRefine((a, refine) => {
+          // action 的条件必填在 schema 层就拦下，别让缺参数的调用混进统计
+          if (a.action === "add" && !(a.title || "").trim())
+            refine.addIssue({
+              code: "custom",
+              path: ["title"],
+              message: "add 必填：任务标题",
+            });
+          if (
+            (a.action === "update" || a.action === "delete") &&
+            a.index == null
+          )
+            refine.addIssue({
+              code: "custom",
+              path: ["index"],
+              message: "update/delete 必填：任务索引（先 list 看，从 0 开始）",
+            });
+          if (a.action === "update" && !a.status)
+            refine.addIssue({
+              code: "custom",
+              path: ["status"],
+              message: "update 必填：新状态（todo/doing/done）",
+            });
+        }),
       execute: async (a) => {
         const tasks = [...ctx.state.tasks];
 

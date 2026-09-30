@@ -27,11 +27,13 @@ import {
   SelfPanel,
   SessionSection,
   SkillPanel,
+  SearchConfigsPanel,
   TaskPanel,
   TtsConfigsPanel,
   VoicePanel,
   VisitorsPanel,
   deviceId,
+  DrawConfigsPanel,
 } from "./Panels";
 import type {
   ChatState,
@@ -140,14 +142,17 @@ export function IdentityCard({
   guestName,
   typeName,
   card,
+  adminBio,
 }: {
   isAdmin: boolean;
-  /** 这个房间记下的称呼（介绍页 / whoami 登记的） */
+  /** 这个房间记下的称呼（介绍页 / whoami 登记的；管理员房里是主人自己的） */
   guestName: string;
   /** 所属类型档的名字（"common" 快照显示成「通用来客」） */
   typeName: string;
   /** 长期身份卡；null = 临时身份（管理员恒为 null） */
   card: UserCard | null;
+  /** 管理员的签名（设置页写的）；只在这层展示 */
+  adminBio: string;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -240,7 +245,11 @@ export function IdentityCard({
               </dl>
             )}
             {isAdmin && (
-              <p className="identity-dim">一码通行，进出不做限制。</p>
+              <p className="identity-dim">
+                {adminBio
+                  ? `${adminBio} —— 一码通行，进出不做限制。`
+                  : "一码通行，进出不做限制。"}
+              </p>
             )}
             {err && <p className="identity-err">{err}</p>}
             {!isAdmin && !card && upgrading && (
@@ -349,6 +358,7 @@ export function ChatSidebar({
   card,
   guestName,
   typeName,
+  adminBio,
   canNotes,
 }: {
   sessions: SessionMeta[];
@@ -367,10 +377,12 @@ export function ChatSidebar({
   onClose: () => void;
   /** 长期身份卡；null = 临时身份（管理员恒为 null） */
   card: UserCard | null;
-  /** 房间记下的称呼（介绍页 / whoami 登记的） */
+  /** 房间记下的称呼（介绍页 / whoami 登记的；管理员房里是主人自己的） */
   guestName: string;
   /** 所属类型档的名字 */
   typeName: string;
+  /** 管理员的签名（设置页写的） */
+  adminBio: string;
   /** 这位来客能不能用笔记本（长期卡 + 档位开了记事本权益） */
   canNotes: boolean;
 }) {
@@ -687,6 +699,7 @@ export function ChatSidebar({
           guestName={guestName}
           typeName={typeName}
           card={card}
+          adminBio={adminBio}
         />
       </div>
     </aside>
@@ -732,14 +745,28 @@ const GROUPS: Array<{
     ],
   },
   {
-    title: "数据",
+    title: "储存内容",
     items: [
       { key: "session", label: "会话记录", icon: "clock", admin: true },
-      { key: "file", label: "云盘文件", icon: "clipboard", admin: true },
+      // 云盘跟着 permFiles 权益走（管理员天生有，见上面 groups 的过滤），
+      // 不再钉死 admin —— 档位开了云盘的长期卡也该有自己的文件柜
+      { key: "file", label: "云盘文件", icon: "clipboard" },
+    ],
+  },
+  {
+    title: "来客设置",
+    items: [
       { key: "visitors", label: "来客", icon: "user", admin: true },
       { key: "guestTypes", label: "来客类型", icon: "bookmark", admin: true },
+    ],
+  },
+  {
+    title: "模型配置",
+    items: [
       { key: "modelConfigs", label: "模型配置", icon: "code", admin: true },
       { key: "ttsConfigs", label: "读音配置", icon: "volume", admin: true },
+      { key: "drawConfigs", label: "绘图配置", icon: "image", admin: true },
+      { key: "searchConfigs", label: "搜索配置", icon: "search", admin: true },
     ],
   },
   {
@@ -776,7 +803,10 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
   },
   contact: { title: "人物记忆", desc: "同一份记忆的另一种看法：按人翻" },
   session: { title: "会话记录", desc: "历史会话索引与会话摘要" },
-  file: { title: "云盘文件", desc: "ericher 可以读写的文件" },
+  file: {
+    title: "云盘文件",
+    desc: "对话产物按会话归档，也可以自己建文件夹整理；改名、移动、删除都在行内",
+  },
   visitors: {
     title: "来客",
     desc: "谁进过门、最近什么时候、都做了什么 —— 留痕当面说明过，也摊在这里",
@@ -787,11 +817,19 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
   },
   modelConfigs: {
     title: "模型配置",
-    desc: "接哪家模型、用哪把钥匙；标着「载入中」的是正在用的那套",
+    desc: "接哪家模型、用哪把钥匙；普通/深度各用哪个，去「回复风格」页指派",
   },
   ttsConfigs: {
     title: "读音配置",
     desc: "一条就是一副可用嗓子：协议、模型与音色都在这里配",
+  },
+  drawConfigs: {
+    title: "绘图配置",
+    desc: "出图三档各用哪家：端点、模型与 key 都在这里配，降级顺序即模型顺序",
+  },
+  searchConfigs: {
+    title: "搜索配置",
+    desc: "联网搜索走哪家：Tavily 或 Brave，配一把钥匙就升级，不配也能用免费通道",
   },
   task: { title: "任务清单", desc: "待办、进行中、已完成" },
   remind: {
@@ -813,14 +851,20 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
 
 /**
  * 版本与更新：显示当前版本（package.json）与构建号（git 短 hash），
- * 点「检查更新」拿构建号去对开源仓库的最新提交 —— 那边比这边新，
- * 说明这台私有部署落后了，列一笔对方的最新提交给你看。
+ * 点「检查更新」拿本地版本号去对开源仓库的版本号 —— 攒批推送是常态，
+ * 两边的提交几乎永远对不上号，hash 不同不代表这边旧；
+ * 开源仓的版本号（package.json，随发布走）比本地新，才是真的该更新。
  */
 function VersionCard() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<{
     upToDate: boolean;
-    latest: { hash: string; message: string; date: string } | null;
+    latest: {
+      version: string;
+      hash: string;
+      message: string;
+      date: string;
+    } | null;
   } | null>(null);
   const [err, setErr] = useState("");
 
@@ -867,10 +911,12 @@ function VersionCard() {
         {result && (
           <p className="meta">
             {result.upToDate
-              ? "已是最新 —— 与开源仓库的 main 一致。"
+              ? result.latest
+                ? `已是最新 —— 开源仓版本 v${result.latest.version}，不比这边新。`
+                : "已是最新。"
               : result.latest
-                ? `开源仓库有新提交（${result.latest.hash}）：${result.latest.message}`
-                : "开源仓库还没有提交记录。"}
+                ? `开源仓有新版本 v${result.latest.version}（构建 ${result.latest.hash}）：${result.latest.message}`
+                : "开源仓库还没有版本信息。"}
           </p>
         )}
       </div>
@@ -956,11 +1002,100 @@ function StyleAssign({
         </select>
       </div>
       {!entries.length && (
-        <p className="meta">
-          先到「数据 → 模型」里加供应商和模型，再回来指派。
-        </p>
+        <p className="meta">先到「模型配置」里加供应商和模型，再回来指派。</p>
       )}
     </div>
+  );
+}
+
+/**
+ * 管理员的个人信息：称呼 + 签名，就地编辑。
+ * 为什么不走来客那套卡：管理员一码通行，没有卡可领 ——
+ * 这两格只是他自己房里的展示档案，存进 state，左下角那张身份卡照着显示。
+ * 直接打 api.patchConfig 而不走 App 的 patch：那层把错误吞进聊天页的提示条，
+ * 这里要的是「成没成」当场说清楚。
+ */
+function AdminIdentityFields({
+  guestName,
+  adminBio,
+}: {
+  guestName: string;
+  adminBio: string;
+}) {
+  const [name, setName] = useState(guestName);
+  const [bio, setBio] = useState(adminBio);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  // 屋子的 state 广播回来时别冲掉正在打的字：动过笔之后就跟编辑值走
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => {
+    if (!dirty) setName(guestName);
+  }, [guestName, dirty]);
+  useEffect(() => {
+    if (!dirty) setBio(adminBio);
+  }, [adminBio, dirty]);
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await api.patchConfig({
+        guestName: name.trim().slice(0, 20),
+        adminBio: bio.trim().slice(0, 80),
+      });
+      setMsg("已保存");
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="form-field" style={{ marginBottom: 14 }}>
+        <label className="form-label">称呼（左下角身份卡显示的名字）</label>
+        <input
+          className="form-input"
+          value={name}
+          maxLength={20}
+          placeholder="怎么称呼你"
+          onChange={(e) => {
+            setDirty(true);
+            setName(e.target.value);
+          }}
+        />
+      </div>
+      <div className="form-field" style={{ marginBottom: 14 }}>
+        <label className="form-label">签名（一句话，选填）</label>
+        <input
+          className="form-input"
+          value={bio}
+          maxLength={80}
+          placeholder="身份弹层里的一句话"
+          onChange={(e) => {
+            setDirty(true);
+            setBio(e.target.value);
+          }}
+        />
+      </div>
+      <div className="row-actions" style={{ marginBottom: 14 }}>
+        <button
+          className="save-btn"
+          onClick={() => void save()}
+          disabled={busy}
+        >
+          <Icon name="edit" size={16} />
+          <span>{busy ? "保存中…" : "保存"}</span>
+        </button>
+        {msg && (
+          <span className="dim" style={{ alignSelf: "center" }}>
+            {msg}
+          </span>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -973,6 +1108,7 @@ export function SettingsPage({
   role,
   card,
   canPublic,
+  canFiles,
   onNav,
   sessions,
   activeSession,
@@ -1002,6 +1138,8 @@ export function SettingsPage({
   card: UserCard | null;
   /** 有没有公开权益（公开墙的贴条资格） */
   canPublic: boolean;
+  /** 有没有云盘权益（文件面板的进门资格；管理员天生有） */
+  canFiles: boolean;
   onNav: (v: ViewKey) => void;
   sessions: SessionMeta[];
   activeSession: string;
@@ -1030,10 +1168,14 @@ export function SettingsPage({
       GROUPS.map((g) => ({
         ...g,
         items: g.items.filter(
-          (i) => (!i.admin || isAdmin) && (!i.guest || !isAdmin),
+          (i) =>
+            (!i.admin || isAdmin) &&
+            (!i.guest || !isAdmin) &&
+            // 云盘面板跟着权益走：管理员天生有，来客要长期卡 + 档位开了 permFiles
+            (i.key !== "file" || canFiles),
         ),
       })).filter((g) => g.items.length > 0),
-    [isAdmin],
+    [isAdmin, canFiles],
   );
   const visible = useMemo(
     () => groups.flatMap((g) => g.items.map((i) => i.key)),
@@ -1111,17 +1253,22 @@ export function SettingsPage({
                 <div className="card-header">
                   <h3 className="card-title">身份</h3>
                   <p className="card-desc">
-                    登录状态由门禁密码决定，管理员才有写权限
+                    {isAdmin
+                      ? "称呼和签名写在这：左下角那张身份卡按它显示，保存即刻生效"
+                      : "登录状态由门禁密码决定，管理员才有写权限"}
                   </p>
                 </div>
-                <div className="form-field" style={{ marginBottom: 14 }}>
-                  <label className="form-label">当前角色</label>
-                  <input
-                    className="form-input"
-                    value={isAdmin ? "管理员" : "访客"}
-                    readOnly
+                {isAdmin ? (
+                  <AdminIdentityFields
+                    guestName={state.guestName}
+                    adminBio={state.adminBio}
                   />
-                </div>
+                ) : (
+                  <div className="form-field" style={{ marginBottom: 14 }}>
+                    <label className="form-label">当前角色</label>
+                    <input className="form-input" value="访客" readOnly />
+                  </div>
+                )}
                 <div className="form-field" style={{ marginBottom: 14 }}>
                   <label className="form-label">
                     设备标识（会话索引按它分片）
@@ -1325,7 +1472,7 @@ export function SettingsPage({
 
             {section === "file" && (
               <div className="settings-card">
-                <FilePanel />
+                <FilePanel sessions={sessions} />
               </div>
             )}
 
@@ -1350,6 +1497,18 @@ export function SettingsPage({
             {section === "ttsConfigs" && (
               <div className="settings-card">
                 <TtsConfigsPanel />
+              </div>
+            )}
+
+            {section === "drawConfigs" && (
+              <div className="settings-card">
+                <DrawConfigsPanel />
+              </div>
+            )}
+
+            {section === "searchConfigs" && (
+              <div className="settings-card">
+                <SearchConfigsPanel />
               </div>
             )}
 

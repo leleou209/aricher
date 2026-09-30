@@ -410,12 +410,12 @@ describe("模型条目增删改查", () => {
     expect(getActiveModelEntry(db)).toBeNull();
   });
 
-  it("max_output 只认正整数，其余一律回 32768", () => {
+  it("max_output 只认正整数，其余一律回 131072", () => {
     expect(toMaxOutput(8192)).toBe(8192);
-    expect(toMaxOutput(0)).toBe(32768);
-    expect(toMaxOutput(-1)).toBe(32768);
-    expect(toMaxOutput(1.5)).toBe(32768);
-    expect(toMaxOutput(undefined)).toBe(32768);
+    expect(toMaxOutput(0)).toBe(131072);
+    expect(toMaxOutput(-1)).toBe(131072);
+    expect(toMaxOutput(1.5)).toBe(131072);
+    expect(toMaxOutput(undefined)).toBe(131072);
   });
 
   it("context_window 建了读得回、改缺省不动；0 = 没设（用默认档）", () => {

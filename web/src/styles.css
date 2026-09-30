@@ -116,7 +116,7 @@ img {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
+  min-height: 32px;
   padding: 5px 16px;
   border: 1px solid var(--yuzhe-line);
   border-radius: var(--yuzhe-r-m);
@@ -124,8 +124,8 @@ img {
   color: var(--yuzhe-ink);
   font-size: 14px;
   font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
+  line-height: 1.35;
+  text-align: center;
   cursor: pointer;
   transition:
     background 0.15s,
@@ -176,7 +176,7 @@ img {
 }
 
 .btn-sm {
-  height: 26px;
+  min-height: 26px;
   padding: 3px 10px;
   font-size: 13px;
 }
@@ -260,7 +260,7 @@ select.field {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
+  min-height: 26px;
   padding: 3px 10px;
   border: 1px solid var(--yuzhe-line);
   border-radius: var(--yuzhe-r-m);
@@ -309,8 +309,8 @@ select.field {
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
+  min-height: 32px;
+  padding: 6px 10px;
   border: none;
   border-radius: var(--yuzhe-r-m);
   background: transparent;
@@ -621,13 +621,17 @@ select.field {
 }
 
 .ask-option {
-  height: 28px;
-  padding: 4px 12px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 5px 12px;
   border: 1px solid var(--yuzhe-line);
   border-radius: var(--yuzhe-r-m);
   background: var(--yuzhe-surface);
   color: var(--yuzhe-ink);
   font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
   cursor: pointer;
   transition:
     border-color 0.15s,
@@ -647,6 +651,33 @@ select.field {
 .ask-hint {
   margin-top: 8px;
   font-size: 12px;
+  color: var(--yuzhe-ink-faint);
+}
+
+/* 提问卡上的自写答案框：回车就发，不用挪到底下的输入栏 */
+.ask-inline {
+  margin-top: 10px;
+}
+
+.ask-inline-input {
+  width: 100%;
+  height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ask-inline-input:focus {
+  border-color: var(--yuzhe-black);
+  background: var(--yuzhe-surface);
+}
+
+.ask-inline-input::placeholder {
   color: var(--yuzhe-ink-faint);
 }
 
@@ -913,19 +944,59 @@ body[data-motion="off"] *::after {
   .chat-header {
     gap: 8px;
     padding: 8px 12px;
+    /* 手机上单行：按钮跟标题挤一行，不再另占一行竖向的空间 ——
+       挤不下的时候按钮自己横着拨，标题让位但不退场 */
+    flex-wrap: nowrap;
   }
 
   .chat-title {
     font-size: 15px;
   }
 
-  /* 窄屏上按钮只留图标，全名放进 title（悬停可看） */
+  /* 标题至少留 80px（长标题打省略号，桌面那套 ellipsis 接着用），
+     剩下的宽度全让给按钮转轮 */
+  .chat-title-wrap {
+    flex: 1 1 auto;
+    min-width: 80px;
+  }
+
+  /* 窄屏上按钮只留图标，全名放进 title（悬停可看）；
+     上下文占用是纯文字 chip，藏了字就剩空壳 —— 单独放行 */
   .chat-actions .chip span {
     display: none;
   }
 
+  .chat-actions .chip-usage span {
+    display: inline;
+  }
+
   .chat-actions .chip {
     padding: 3px 8px;
+    flex: none;
+  }
+
+  /* 按钮转轮（单行版）：占标题右侧剩下的宽度，挤了就左右拨；
+     右缘 12px 渐隐是「后面还有」的提示 —— 右侧留了 12px 的 padding，
+     拨到头时最后一个 chip 恰好停在渐隐起点之外，不会看着像被裁了半截；
+     滚动条照旧藏起来 */
+  .chat-actions {
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 12px;
+    -webkit-mask-image: linear-gradient(
+      to right,
+      #000 calc(100% - 12px),
+      transparent
+    );
+    mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+  }
+
+  .chat-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .messages-area {

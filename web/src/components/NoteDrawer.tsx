@@ -29,10 +29,13 @@ function when(iso: string): string {
 export function NoteDrawer({
   open,
   onClose,
+  room,
   focusId,
 }: {
   open: boolean;
   onClose: () => void;
+  /** 本子跟着场走：连在哪间场屋上，读写的就是哪一间的笔记本 */
+  room: string;
   /** 后端记着的「他正在看哪一篇」，列表里标出来 */
   focusId: string;
 }) {
@@ -47,32 +50,39 @@ export function NoteDrawer({
   /** 载入一篇时不算「他改过」：否则抽屉一打开就会自动存一遍 */
   const loading = useRef(true);
 
-  // 只在拉开的时候取列表：抽屉常年挂着（动画要它），但没必要一直问后端
+  // 只在拉开的时候取列表：抽屉常年挂着（动画要它），但没必要一直问后端。
+  // 换了一场也重取：本子跟着场走，这场是这场的那本
   useEffect(() => {
     if (!open) return;
     void (async () => {
       try {
-        setList(await api.notes());
+        setList(await api.notes(undefined, undefined, room));
         setErr("");
       } catch (e) {
         setErr((e as Error).message);
       }
     })();
-  }, [open]);
+  }, [open, room]);
 
   useEffect(() => {
     if (!open) return;
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          setList(await api.notes(q.trim() || undefined));
+          setList(await api.notes(q.trim() || undefined, undefined, room));
         } catch {
           /* 搜索失败不该弹东西：列表停在上一份就好 */
         }
       })();
     }, 260);
     return () => window.clearTimeout(t);
-  }, [q, open]);
+  }, [q, open, room]);
+
+  // 换了一场，翻到一半的那篇收回去 —— 它是上一场的本子上的，
+  // 留着的话自动保存会把它存进新一场的本子里（按 id 在那边另立一篇）
+  useEffect(() => {
+    setCur(null);
+  }, [room]);
 
   useEffect(() => {
     if (loading.current) {
@@ -84,7 +94,7 @@ export function NoteDrawer({
 
   const openNote = async (id: string) => {
     try {
-      const n = await api.readNote(id);
+      const n = await api.readNote(id, room);
       if (!n) return;
       loading.current = true;
       setCur(n);
@@ -94,7 +104,7 @@ export function NoteDrawer({
       setPreview(false);
       setErr("");
       // 拉开哪一篇就上报哪一篇：他下一轮才知道你说的「这篇」是哪篇
-      void api.focusNote(id).catch(() => {});
+      void api.focusNote(id, room).catch(() => {});
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -105,11 +115,14 @@ export function NoteDrawer({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          const n = await api.saveNote({
-            id: cur.id,
-            title: title.trim() || undefined,
-            body,
-          });
+          const n = await api.saveNote(
+            {
+              id: cur.id,
+              title: title.trim() || undefined,
+              body,
+            },
+            room,
+          );
           setCur(n);
           setDirty(false);
         } catch (e) {
@@ -118,12 +131,12 @@ export function NoteDrawer({
       })();
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
-  }, [cur, dirty, title, body]);
+  }, [cur, dirty, title, body, room]);
 
   const create = async () => {
     try {
-      const n = await api.saveNote({ title: "新的笔记", body: "" });
-      setList(await api.notes());
+      const n = await api.saveNote({ title: "新的笔记", body: "" }, room);
+      setList(await api.notes(undefined, undefined, room));
       await openNote(n.id);
     } catch (e) {
       setErr((e as Error).message);

@@ -23,6 +23,7 @@ import {
   type Role,
 } from "./auth";
 import { COMMON_TYPE_ID } from "./agent/userCards";
+import { compareSemver } from "./version";
 
 // wrangler.jsonc 的 class_name 需要能从 main 模块解析到 CoworkAgent
 export { CoworkAgent } from "./agent/cowork";
@@ -30,9 +31,14 @@ export { CoworkAgent } from "./agent/cowork";
 import { DEFAULT_BASE_PROMPT } from "./agent/prompt";
 import { analyzeUpload, attachBlock } from "./agent/attach";
 import {
+  FOLDER_KEEP,
   PUBLIC_PREFIX,
+  assertInScope,
   canReadFile,
   fileResponseHeaders,
+  roomKeyPrefix,
+  safeFolder,
+  safeKeyPath,
   scopedKey,
 } from "./fileAccess";
 import { fetchOfficialUsage } from "./analytics";
@@ -99,6 +105,11 @@ const KNOWN_KEY_SECRETS = [
   "GEMINI_KEY",
   "GLM_KEY",
   "SILICONFLOW_KEY",
+  // 搜索通道的两把：少了它们，搜索配置面板的下拉里永远列不出自己的 key，
+  // 一旦在面板里重选保存，keySecret 就被洗成别家/清空 —— key 明明还在
+  // env 里，调度却永远落到免费通道（还悄无声息，查起来最费人）
+  "TAVILY_API_KEY",
+  "BRAVE_API_KEY",
 ];
 
 const FAVICON =
@@ -321,7 +332,10 @@ async function handleUpload(req: Request, env: Env): Promise<Response> {
           { status: 403 },
         );
     }
-    const key = await uploadKeyFor(req, env, file, wantPublic);
+    const folder = wantPublic
+      ? "public"
+      : safeFolder(String(form.get("folder") ?? ""));
+    const key = await uploadKeyFor(req, env, file, wantPublic, folder);
     await env.MEMORY_BUCKET.put(key, file.stream(), {
       httpMetadata: { contentType: file.type || "application/octet-stream" },
     });
@@ -339,16 +353,19 @@ async function handleUpload(req: Request, env: Env): Promise<Response> {
 }
 
 /**
- * 这次上传落到哪个 key。管理员传到桶根（原来就这条路）；
- * 长期使用者（有卡）传进自己房间的前缀 —— R2 是同一只桶，但他读写都只见自己那间
- * （canReadFile 按前缀划界）。临时票在路由层就被拦了，走不到这里。
+ * 这次上传落到哪个 key。管理员传到桶根（原来就这条路，带 folder 就落进
+ * 桶根下的那个子目录）；长期使用者（有卡）传进自己房间的前缀 —— R2 是
+ * 同一只桶，但他读写都只见自己那间（canReadFile 按前缀划界）。
+ * 临时票在路由层就被拦了，走不到这里。
  * 想公开的落 f/public/（权益已在 handleUpload 里核过）：那个前缀谁都能读。
+ * folder 已在 handleUpload 里洗过（safeFolder），这里只管拼。
  */
 async function uploadKeyFor(
   req: Request,
   env: Env,
   file: File,
   wantPublic: boolean,
+  folder = "",
 ): Promise<string> {
   const raw = file.name || "upload";
   const dot = raw.lastIndexOf(".");
@@ -363,10 +380,28 @@ async function uploadKeyFor(
   // 公开空间不挑身份：管理员和持卡者发的都落同一个前缀（权益已在 handleUpload 核过）
   if (wantPublic) return scopedKey("public", base, ext);
   const info = await verifyTokenInfo(env, authToken(req));
-  if (!info || info.role !== "user" || !info.card)
-    return `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${raw}`;
+  if (!info || info.role !== "user" || !info.card) {
+    const rand = crypto.randomUUID().slice(0, 8);
+    return folder
+      ? `${folder}/${Date.now()}-${rand}-${raw}`
+      : `${Date.now()}-${rand}-${raw}`;
+  }
   const room = await agentNameForToken(env, "user", authToken(req));
-  return scopedKey(room, base, ext);
+  return scopedKey(room, base, ext, folder);
+}
+
+/**
+ * 云盘写操作（建文件夹 / 移动 / 删除）的范围。
+ * 管理员整只桶（scope=""，key 从桶根算）；来客凭 permFiles 权益
+ * 限自己房间前缀。没票、没卡、没权益都是 null —— 调用方回 403。
+ */
+async function fileScopeFor(req: Request, env: Env): Promise<string | null> {
+  const info = await verifyTokenInfo(env, authToken(req));
+  if (!info) return null;
+  if (info.role === "admin") return "";
+  if (!(await cardAllows(req, env, "permFiles"))) return null;
+  const room = await agentNameForToken(env, "user", authToken(req));
+  return roomKeyPrefix(room);
 }
 
 /**
@@ -509,28 +544,184 @@ function guessType(key: string): string {
   return IMG_TYPE[ext] || "application/octet-stream";
 }
 
-async function handleList(env: Env): Promise<Response> {
+/** R2 对象 → 前端文件行。树形是前端按 key 路径自己拼的，这里只给原料 */
+function toFileRow(o: R2Object): {
+  key: string;
+  size: number;
+  uploaded: Date;
+} {
+  return { key: o.key, size: o.size, uploaded: o.uploaded };
+}
+
+/**
+ * 云盘清单。管理员看整只桶；来客看自己那间 + 公开空间（读得到的地方
+ * 才列得出来，和 canReadFile 同一把尺子）。文件夹是 key 里的路径，
+ * 这里不整理 —— 列表的形状交给前端拼树。
+ */
+async function handleList(req: Request, env: Env): Promise<Response> {
   try {
-    const list = await env.MEMORY_BUCKET.list({ limit: 200 });
+    const bucket = env.MEMORY_BUCKET;
+    if (!bucket)
+      return Response.json({ ok: false, error: "云盘未配置" }, { status: 500 });
+    const role = (await authRole(req, env)) ?? "user";
+    if (role === "admin") {
+      const list = await bucket.list({ limit: 500 });
+      return Response.json({
+        files: list.objects.map(toFileRow),
+        count: list.objects.length,
+        scope: "",
+      });
+    }
+    const room = await agentNameFor(req, env, role);
+    const [own, pub] = await Promise.all([
+      bucket.list({ prefix: roomKeyPrefix(room), limit: 500 }),
+      bucket.list({ prefix: PUBLIC_PREFIX, limit: 500 }),
+    ]);
+    const objects = [...own.objects, ...pub.objects];
     return Response.json({
-      files: list.objects.map((o) => ({
-        key: o.key,
-        size: o.size,
-        uploaded: o.uploaded,
-      })),
-      count: list.objects.length,
+      files: objects.map(toFileRow),
+      count: objects.length,
+      scope: roomKeyPrefix(room),
     });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 500 });
   }
 }
 
+/** 新建文件夹：塞一个 .keep 占位对象，前缀就算「存在」了 */
+async function handleMkdir(req: Request, env: Env): Promise<Response> {
+  try {
+    const bucket = env.MEMORY_BUCKET;
+    if (!bucket)
+      return Response.json({ ok: false, error: "云盘未配置" }, { status: 500 });
+    const scope = await fileScopeFor(req, env);
+    if (scope === null) return forbidden();
+    const { path } = (await req.json()) as { path?: unknown };
+    const base = safeKeyPath(String(path ?? ""));
+    assertInScope(base, scope);
+    const key = `${base}/${FOLDER_KEEP}`;
+    await bucket.put(key, "", {
+      httpMetadata: { contentType: "application/x-empty" },
+    });
+    return Response.json({ ok: true, key });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/**
+ * 移动 / 重命名：from 精确命中一个对象就搬一个；没命中就当前缀，
+ * 把整个「文件夹」逐个 copy+delete 搬过去。R2 没有原生 move，
+ * 搬就是「复制到新 key、删掉旧 key」。
+ */
+async function handleMove(req: Request, env: Env): Promise<Response> {
+  try {
+    const bucket = env.MEMORY_BUCKET;
+    if (!bucket)
+      return Response.json({ ok: false, error: "云盘未配置" }, { status: 500 });
+    const scope = await fileScopeFor(req, env);
+    if (scope === null) return forbidden();
+    const { from, to } = (await req.json()) as { from?: unknown; to?: unknown };
+    let src = "";
+    let dst = "";
+    try {
+      src = safeKeyPath(String(from ?? ""));
+      dst = safeKeyPath(String(to ?? ""));
+      assertInScope(src, scope);
+      assertInScope(dst, scope);
+    } catch (e) {
+      return Response.json(
+        { ok: false, error: (e as Error).message },
+        { status: 400 },
+      );
+    }
+    if (src === dst)
+      return Response.json(
+        { ok: false, error: "原地不动，不用搬" },
+        { status: 400 },
+      );
+    // 搬进自己的子目录会把自己套进去：搬完这批，下一批列到的是刚搬出来的副本
+    if (dst.startsWith(`${src}/`))
+      return Response.json(
+        { ok: false, error: "不能把文件夹搬进它自己里面" },
+        { status: 400 },
+      );
+    const obj = await bucket.get(src);
+    if (obj) {
+      await bucket.put(dst, obj.body, { httpMetadata: obj.httpMetadata });
+      await bucket.delete(src);
+      return Response.json({ ok: true, moved: 1 });
+    }
+    const srcPrefix = `${src}/`;
+    let moved = 0;
+    let cursor: string | undefined;
+    do {
+      const list = await bucket.list({ prefix: srcPrefix, cursor, limit: 500 });
+      for (const o of list.objects) {
+        const one = await bucket.get(o.key);
+        if (!one) continue;
+        await bucket.put(`${dst}/${o.key.slice(srcPrefix.length)}`, one.body, {
+          httpMetadata: one.httpMetadata,
+        });
+        await bucket.delete(o.key);
+        moved++;
+      }
+      cursor = list.truncated ? list.cursor : undefined;
+    } while (cursor);
+    if (!moved)
+      return Response.json(
+        { ok: false, error: `没有这个文件或文件夹：${src}` },
+        { status: 404 },
+      );
+    return Response.json({ ok: true, moved });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/**
+ * 删除：给 key 删单个对象，给 folder 清整个前缀。范围照 fileScopeFor 划 ——
+ * 管理员整只桶，来客只动得了自己那间；删公开空间的东西不在任何人的「自己那间」里。
+ */
 async function handleDelete(req: Request, env: Env): Promise<Response> {
   try {
-    const { key } = (await req.json()) as { key?: string };
-    if (!key)
-      return Response.json({ ok: false, error: "缺少 key" }, { status: 400 });
-    await env.MEMORY_BUCKET.delete(key);
+    const bucket = env.MEMORY_BUCKET;
+    if (!bucket)
+      return Response.json({ ok: false, error: "云盘未配置" }, { status: 500 });
+    const scope = await fileScopeFor(req, env);
+    if (scope === null) return forbidden();
+    const body = (await req.json()) as { key?: unknown; folder?: unknown };
+    if (typeof body.folder === "string" && body.folder.trim()) {
+      const base = safeKeyPath(body.folder);
+      assertInScope(base, scope);
+      const prefix = base.endsWith("/") ? base : `${base}/`;
+      let deleted = 0;
+      let cursor: string | undefined;
+      do {
+        const list = await bucket.list({ prefix, cursor, limit: 500 });
+        for (const o of list.objects) {
+          await bucket.delete(o.key);
+          deleted++;
+        }
+        cursor = list.truncated ? list.cursor : undefined;
+      } while (cursor);
+      return Response.json({ ok: true, deleted });
+    }
+    if (typeof body.key !== "string" || !body.key.trim())
+      return Response.json(
+        { ok: false, error: "缺少 key 或 folder" },
+        { status: 400 },
+      );
+    // 老 key（前缀约定之前传的）里可能带着 ?*"<> 这类字符，过不了段校验 ——
+    // 单删退回原样字串，划界（assertInScope）照做，来客照样出不了自己那间
+    let key = body.key.trim();
+    try {
+      key = safeKeyPath(key);
+    } catch {
+      // 过不了校验的老名字按原样删，范围检查在下面兜底
+    }
+    assertInScope(key, scope);
+    await bucket.delete(key);
     return Response.json({ ok: true });
   } catch (e) {
     return fail(e);
@@ -593,6 +784,16 @@ async function handleApi(
     m === "POST" &&
     (p === "/api/upload" || p === "/api/attach") &&
     (await cardAllows(req, env, "permFiles"));
+  // 云盘文件管理（列表 / 建文件夹 / 移动 / 删除）：同一把 permFiles 权益。
+  // 管理员天生放行（上面 role !== "admin" 拦不到他）；来客范围在
+  // fileScopeFor 里再划一道 —— 放行的是「进来」，动的范围仍限自己那间
+  const fileMgr =
+    (p === "/api/files" && m === "GET") ||
+    (m === "POST" &&
+      (p === "/api/files/mkdir" ||
+        p === "/api/files/move" ||
+        p === "/api/delete"));
+  const permFileMgr = fileMgr && (await cardAllows(req, env, "permFiles"));
   // 公开墙：贴一条要 permPublic 权益；摘自己贴的只要卡还在 ——
   // 收回自己说过的话不该被档位卡住，挡的从来是往墙上贴
   const wallPost =
@@ -608,6 +809,7 @@ async function handleApi(
     !(p.startsWith("/api/files/") && m === "GET") &&
     !permNotes &&
     !permFiles &&
+    !permFileMgr &&
     !wallPost &&
     !wallUnpost &&
     !USER_ROUTES.has(p) &&
@@ -645,7 +847,9 @@ async function handleApi(
   // 文件读取对所有登录角色放行（来客要看得见自己那间画的图），
   // 但读哪个 key 由 handleServe 按房间划界 —— 放行的是「读自己的」，不是「读全部」
   const fileRead = p.startsWith("/api/files/") && m === "GET";
-  if (p === "/api/files" && m === "GET") return handleList(env);
+  if (p === "/api/files" && m === "GET") return handleList(req, env);
+  if (p === "/api/files/mkdir" && m === "POST") return handleMkdir(req, env);
+  if (p === "/api/files/move" && m === "POST") return handleMove(req, env);
   if (fileRead)
     return handleServe(
       env,
@@ -675,7 +879,8 @@ async function handleApi(
   // 这一串接口都落在「说话的人自己那间屋子」上：管理员是主人那间，
   // 来客是 token 派生的那间。以前这里固定写死 default，来客点会话列表
   // 拿到的是主人家的东西 —— 现在他看的是自己的几场对话。
-  const agent = agentStub(env, await agentNameFor(req, env, role));
+  const base = await agentNameFor(req, env, role);
+  const agent = agentStub(env, base);
   const readState = async <T>(p: Promise<T>): Promise<Response> => {
     try {
       return Response.json({ ok: true, data: await p });
@@ -685,6 +890,16 @@ async function handleApi(
   };
   const writeState = async <T>(p: Promise<T> | T): Promise<Response> =>
     readState(Promise.resolve(p));
+
+  // 「点名的屋」核验：多场并行后前端会点名某间场屋（人屋--场id）来打 REST，
+  // 比如 /api/think、/api/stop 要打的是连接正挂着的那间，不是人屋。
+  // 只放行本人名下的屋 —— 前缀派生不可伪造，冒用别人的前缀只能给自己开野场，
+  // 进不了别人的屋。和 /agents 守卫（routeAgentRequest 的 guard）同一把尺。
+  // 没点名 / 点得不对就落回人屋：老客户端不带你玩也不出错
+  const targetRoom = (room: unknown): string =>
+    typeof room === "string" && (room === base || room.startsWith(base + "--"))
+      ? room
+      : base;
 
   // 面板与功能留痕：来客动过哪个接口就记一笔（介绍页里明说过的那份账）。
   // 记完就忘：留痕失败不该拖住请求本身，更不该把它记到主人头上（logVisitor 内部判房间）。
@@ -873,38 +1088,57 @@ async function handleApi(
     return writeState(Promise.resolve(agent.removeGuestType(id)));
   }
 
-  // ── 更新检查：拿本机构建号去对开源仓库的最新提交 ──
-  // 公开仓库（ericher）是交付出口：那边比这边新，说明私有部署落后了。
+  // ── 更新检查：拿本地版本号去对开源仓库的版本号 ──
+  // 公开仓库（ericher）是交付出口，但私有部署攒批推送是常态 —— 两边的提交
+  // 几乎永远对不上号，hash 不同不代表这边旧。所以判新旧只认版本号：
+  // 开源仓 package.json 的 version（随发布一起走）比本地新，才是真的该更新；
+  // 构建号与提交信息照旧取回来，作「对方走到哪了」的参照。
   // 转发放到 Worker 端而不是浏览器直连 —— Cloudflare 到 GitHub 的路比访客
   // 浏览器到 GitHub 的路稳得多，而且不用在前端暴露对 api.github.com 的依赖。
   if (p === "/api/update-check" && m === "GET") {
     try {
-      const r = await fetch(
-        "https://api.github.com/repos/leleou209/ericher/commits/main",
-        {
+      const [pkgRes, commitRes] = await Promise.all([
+        fetch(
+          "https://raw.githubusercontent.com/leleou209/ericher/main/package.json",
+          {
+            headers: { "User-Agent": "ericher-update-check" },
+          },
+        ),
+        fetch("https://api.github.com/repos/leleou209/ericher/commits/main", {
           headers: {
             "User-Agent": "ericher-update-check",
             Accept: "application/vnd.github+json",
           },
-        },
-      );
-      if (!r.ok)
+        }),
+      ]);
+      if (!pkgRes.ok || !commitRes.ok)
         return Response.json(
-          { ok: false, error: `GitHub 返回 ${r.status}` },
+          {
+            ok: false,
+            error: `GitHub 返回 ${!pkgRes.ok ? pkgRes.status : commitRes.status}`,
+          },
           { status: 502 },
         );
-      const j = (await r.json()) as {
+      const pkg = (await pkgRes.json()) as { version?: string };
+      const j = (await commitRes.json()) as {
         sha: string;
         commit: { message: string; committer?: { date?: string } };
       };
+      const remote = (pkg.version || "").trim();
+      if (!remote)
+        return Response.json(
+          { ok: false, error: "开源仓 package.json 没有 version 字段" },
+          { status: 502 },
+        );
       const latest = {
+        version: remote,
         hash: j.sha.slice(0, 7),
         message: (j.commit.message.split("\n")[0] || "").slice(0, 100),
         date: j.commit.committer?.date || "",
       };
       return Response.json({
         ok: true,
-        upToDate: latest.hash === __GIT_HASH__,
+        upToDate: compareSemver(remote, __APP_VERSION__) <= 0,
         latest,
       });
     } catch (e) {
@@ -1201,6 +1435,70 @@ async function handleApi(
     return writeState(Promise.resolve(agent.removeTtsConfig(id)));
   }
 
+  // ── 绘图配置目录（draw_configs）：出图三档各用哪家，只有管理员能碰 ──
+  // 同 model/tts 两套目录：只存 secret 变量名，key 本体永不落库。
+  if (p === "/api/draw-configs" && m === "GET") {
+    try {
+      return Response.json({ ok: true, configs: await agent.drawConfigList() });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+  if (p === "/api/draw-configs" && m === "PATCH") {
+    try {
+      const body = (await req.json()) as Record<string, unknown>;
+      const tier = typeof body.tier === "string" ? body.tier : "";
+      if (!tier)
+        return Response.json(
+          { ok: false, error: "缺少 tier" },
+          { status: 400 },
+        );
+      return writeState(
+        Promise.resolve(
+          agent.patchDrawConfig(tier, {
+            format: typeof body.format === "string" ? body.format : undefined,
+            endpoint:
+              typeof body.endpoint === "string" ? body.endpoint : undefined,
+            models: Array.isArray(body.models)
+              ? body.models.map(String)
+              : undefined,
+            keySecret:
+              typeof body.keySecret === "string" ? body.keySecret : undefined,
+            label: typeof body.label === "string" ? body.label : undefined,
+          }),
+        ),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  }
+
+  // ── 搜索通道配置（search_config）：搜索走 Tavily 还是 Brave，只有管理员能碰 ──
+  // 同 model/tts/draw 几套目录：只存 secret 变量名，key 本体永不落库。
+  if (p === "/api/search-configs" && m === "GET") {
+    try {
+      return Response.json({ ok: true, config: await agent.searchConfigGet() });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+  if (p === "/api/search-configs" && m === "PATCH") {
+    try {
+      const body = (await req.json()) as Record<string, unknown>;
+      return writeState(
+        Promise.resolve(
+          agent.patchSearchConfig({
+            format: typeof body.format === "string" ? body.format : undefined,
+            keySecret:
+              typeof body.keySecret === "string" ? body.keySecret : undefined,
+          }),
+        ),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  }
+
   // 人格提示词的出厂默认值，供管理员面板"恢复默认"用
   if (p === "/api/prompt" && m === "GET")
     return Response.json({ ok: true, data: DEFAULT_BASE_PROMPT });
@@ -1327,10 +1625,13 @@ async function handleApi(
 
   // ── 笔记本：管理员和我一起写的本子。一条都不给来客 ——
   // 它是他的草稿本，性质和记忆一样偏私，不该因为「顺手」就开在门外 ──
+  // room 定参：本子跟着场走（每场自带资产）——连在哪间场屋上，读写的就是
+  // 哪一间的本子（note 工具那头读的也是同一间）。核验走 targetRoom 同一把尺
   if (p === "/api/notes" && m === "GET") {
+    const notes = agentStub(env, targetRoom(url.searchParams.get("room")));
     return readState(
       Promise.resolve(
-        agent.listNotes(
+        notes.listNotes(
           url.searchParams.get("q") || "",
           url.searchParams.get("tag") || "",
         ),
@@ -1341,7 +1642,11 @@ async function handleApi(
     const id = url.searchParams.get("id") || "";
     if (!id)
       return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
-    return readState(Promise.resolve(agent.readNote(id)));
+    return readState(
+      Promise.resolve(
+        agentStub(env, targetRoom(url.searchParams.get("room"))).readNote(id),
+      ),
+    );
   }
   if (p === "/api/notes/save" && m === "POST") {
     try {
@@ -1351,7 +1656,7 @@ async function handleApi(
       // 我动笔那条路在工具里，那边自己写 assistant
       return writeState(
         Promise.resolve(
-          agent.saveNote({
+          agentStub(env, targetRoom(body.room)).saveNote({
             id,
             title: typeof body.title === "string" ? body.title : undefined,
             body: typeof body.body === "string" ? body.body : undefined,
@@ -1369,10 +1674,15 @@ async function handleApi(
   }
   if (p === "/api/notes/delete" && m === "POST") {
     try {
-      const { id } = (await req.json()) as { id?: string };
+      const { id, room } = (await req.json()) as {
+        id?: string;
+        room?: unknown;
+      };
       if (!id)
         return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
-      return writeState(Promise.resolve(agent.deleteNote(id)));
+      return writeState(
+        Promise.resolve(agentStub(env, targetRoom(room)).deleteNote(id)),
+      );
     } catch (e) {
       return fail(e);
     }
@@ -1381,9 +1691,16 @@ async function handleApi(
   // 单开一条窄路由，而不是塞进 POST /api/config —— 后者一放，人格提示词、任务清单也跟着开了。
   if (p === "/api/notes/focus" && m === "POST") {
     try {
-      const { id } = (await req.json()) as { id?: string };
+      const { id, room } = (await req.json()) as {
+        id?: string;
+        room?: unknown;
+      };
       return writeState(
-        Promise.resolve(agent.setNoteFocus(typeof id === "string" ? id : "")),
+        Promise.resolve(
+          agentStub(env, targetRoom(room)).setNoteFocus(
+            typeof id === "string" ? id : "",
+          ),
+        ),
       );
     } catch (e) {
       return fail(e);
@@ -1393,17 +1710,32 @@ async function handleApi(
     const id = url.searchParams.get("id") || "";
     if (!id)
       return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
-    return readState(Promise.resolve(agent.listNoteRevisions(id)));
+    return readState(
+      Promise.resolve(
+        agentStub(
+          env,
+          targetRoom(url.searchParams.get("room")),
+        ).listNoteRevisions(id),
+      ),
+    );
   }
   if (p === "/api/notes/restore" && m === "POST") {
     try {
-      const { id, seq } = (await req.json()) as { id?: string; seq?: number };
+      const { id, seq, room } = (await req.json()) as {
+        id?: string;
+        seq?: number;
+        room?: unknown;
+      };
       if (!id || typeof seq !== "number")
         return Response.json(
           { ok: false, error: "缺少 id 或 seq" },
           { status: 400 },
         );
-      return writeState(Promise.resolve(agent.restoreNoteRevision(id, seq)));
+      return writeState(
+        Promise.resolve(
+          agentStub(env, targetRoom(room)).restoreNoteRevision(id, seq),
+        ),
+      );
     } catch (e) {
       return fail(e);
     }
@@ -1412,7 +1744,7 @@ async function handleApi(
   // ── 跨会话回忆：管理员在自己的历史里搜原话（会话含私有内容，不放开来客）──
   if (p === "/api/recall" && m === "GET") {
     const q = url.searchParams.get("q") || "";
-    return readState(Promise.resolve(agent.recall(q)));
+    return readState(agent.recall(q));
   }
 
   // ── 今日写额度：谁在吃那 10 万行。只给管理员看（它是这间屋子的运行账）──
@@ -1453,28 +1785,48 @@ async function handleApi(
   // 人格提示词、任务清单、自我认知就一起开了，那不是「调强度」是「接管」。
   if (p === "/api/think" && m === "POST") {
     try {
-      const { mode } = (await req.json()) as { mode?: unknown };
+      const { mode, room } = (await req.json()) as {
+        mode?: unknown;
+        room?: unknown;
+      };
       if (mode !== "deep" && mode !== "normal") {
         return Response.json(
           { ok: false, error: "只有 deep 和 normal 两种模式" },
           { status: 400 },
         );
       }
-      return writeState(agent.patchConfig({ thinkMode: mode }));
+      // 点名场屋时调的是那一场自己的开关（每场各自的强度），不动人屋的
+      return writeState(
+        agentStub(env, targetRoom(room)).patchConfig({ thinkMode: mode }),
+      );
     } catch (e) {
       return fail(e);
     }
   }
 
-  // 收起一张提问卡：她中途问过的那个问题，他答了，或者按了「先不答」。
-  // 只管收卡片 —— 答案本身走聊天那条路发出去，不从这里进对话。
-  // 不给来客：他那一间没有 ask 工具，也就不该有卡片可收。
+  // 回答一张提问卡：他的回答会 resolve 那次挂起的 ask 工具调用（阻塞式），
+  // 模型带着答案在同一轮工作流里接着跑；room 定参送进挂起的场屋 ——
+  // 他可能切到别的场才想起来答。空答案 = 先不答（让他自己拿主意继续）。
+  // 不给来客：他那一间没有 ask 工具，也就不该有卡片可答。
   if (p === "/api/ask/answer" && m === "POST") {
     try {
-      const { id } = (await req.json()) as { id?: string };
+      const { id, answer, room } = (await req.json()) as {
+        id?: string;
+        answer?: string;
+        room?: string;
+      };
       if (!id)
         return Response.json({ ok: false, error: "缺少 id" }, { status: 400 });
-      return writeState(Promise.resolve(agent.answerAsk(id)));
+      const target = room ? agentStub(env, targetRoom(room)) : agent;
+      const r = await target.answerAsk(id, answer ?? "");
+      // 挂起已经不在（超时放行过、或这间屋重启过）：答案喂不进那次工具调用了。
+      // 不能假装成功 —— 前端收到 409 会把这句话退回当普通消息发出去
+      if (!r.delivered)
+        return Response.json(
+          { ok: false, error: "这张提问已经过期了（超时或已重开）" },
+          { status: 409 },
+        );
+      return Response.json({ ok: true, data: r.state });
     } catch (e) {
       return fail(e);
     }
@@ -1736,14 +2088,25 @@ async function handleApi(
     }
   }
 
-  // 消息反馈：赞 / 踩 / 评论。访客也能用，所以这三个路由在 USER_ROUTES 里。
+  // 消息反馈：赞 / 踩 / 评论 / 标重。访客也能用，所以这几个路由在 USER_ROUTES 里。
+  // room：反馈得跟着「场」走 —— 消息住在场屋里（人屋--场id），写进人屋那间
+  // 永远读不回来（聊天那头读的是场屋的库），被踩触发的反思也会找不到那条消息。
+  // 点名的屋由 targetRoom 核验前缀，没点名就落回人屋
   if (p === "/api/feedback" && m === "GET")
-    return readState(Promise.resolve(agent.feedbackSummary(role)));
+    return readState(
+      Promise.resolve(
+        agentStub(
+          env,
+          targetRoom(url.searchParams.get("room")),
+        ).feedbackSummary(role),
+      ),
+    );
   if (p === "/api/vote" && m === "POST") {
     try {
-      const { messageId, value } = (await req.json()) as {
+      const { messageId, value, room } = (await req.json()) as {
         messageId?: string;
         value?: unknown;
+        room?: string;
       };
       if (!messageId)
         return Response.json(
@@ -1751,7 +2114,9 @@ async function handleApi(
           { status: 400 },
         );
       return writeState(
-        Promise.resolve(agent.vote(messageId, role, Number(value))),
+        Promise.resolve(
+          agentStub(env, targetRoom(room)).vote(messageId, role, Number(value)),
+        ),
       );
     } catch (e) {
       return fail(e);
@@ -1764,13 +2129,20 @@ async function handleApi(
         { ok: false, error: "缺少 messageId" },
         { status: 400 },
       );
-    return readState(Promise.resolve(agent.readComments(messageId)));
+    return readState(
+      Promise.resolve(
+        agentStub(env, targetRoom(url.searchParams.get("room"))).readComments(
+          messageId,
+        ),
+      ),
+    );
   }
   if (p === "/api/comment" && m === "POST") {
     try {
-      const { messageId, content } = (await req.json()) as {
+      const { messageId, content, room } = (await req.json()) as {
         messageId?: string;
         content?: string;
+        room?: string;
       };
       if (!messageId || !content?.trim()) {
         return Response.json(
@@ -1779,7 +2151,13 @@ async function handleApi(
         );
       }
       return writeState(
-        Promise.resolve(agent.postComment(messageId, role, content)),
+        Promise.resolve(
+          agentStub(env, targetRoom(room)).postComment(
+            messageId,
+            role,
+            content,
+          ),
+        ),
       );
     } catch (e) {
       return fail(e);
@@ -1788,22 +2166,31 @@ async function handleApi(
   // 标重：给管理员自己的发言打「要重视」的标记，可多条并存，再点一次取消
   if (p === "/api/flag" && m === "POST") {
     try {
-      const { messageId } = (await req.json()) as { messageId?: string };
+      const { messageId, room } = (await req.json()) as {
+        messageId?: string;
+        room?: string;
+      };
       if (!messageId)
         return Response.json(
           { ok: false, error: "缺少 messageId" },
           { status: 400 },
         );
-      return writeState(Promise.resolve(agent.toggleFlag(messageId)));
+      return writeState(
+        Promise.resolve(agentStub(env, targetRoom(room)).toggleFlag(messageId)),
+      );
     } catch (e) {
       return fail(e);
     }
   }
 
   if (p === "/api/organize" && m === "POST") return readState(agent.organize());
-  // 打断：让这一轮正在生成的回答停下来
-  if (p === "/api/stop" && m === "POST")
-    return readState(agent.stopGenerating());
+  // 打断：让这一轮正在生成的回答停下来。
+  // room：正在说话的那间屋 —— 连接可能挂在场屋上，REST 没有连接语义得点名；
+  // 老客户端不带 body 也不出错（照旧打断人屋那场）
+  if (p === "/api/stop" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { room?: unknown };
+    return readState(agentStub(env, targetRoom(body.room)).stopGenerating());
+  }
   if (p === "/api/clear" && m === "POST") {
     await agent.resetActiveSession();
     return Response.json({ ok: true });
@@ -1980,7 +2367,10 @@ export default {
       const role = await authRole(r, env);
       if (!role) return unauthorized();
       const name = agentNameInPath(new URL(r.url).pathname);
-      if (name && name !== (await agentNameFor(r, env, role)))
+      const room = await agentNameFor(r, env, role);
+      // 本人的屋，或本人名下的场屋（room--sessionId，一个会话一间完整运行时）：
+      // 前缀派生不可伪造 —— 冒用别人的前缀只能给自己开野场，进不了别人的屋
+      if (name && name !== room && !name.startsWith(room + "--"))
         return forbidden();
       return undefined;
     };

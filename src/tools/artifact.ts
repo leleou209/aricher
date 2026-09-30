@@ -11,7 +11,7 @@
 
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { scopedKey } from "../fileAccess";
+import { sessionKey } from "../fileAccess";
 import type { ToolCtx } from "./types";
 
 /** 卡片体积上限：一张卡片不该是一本书，200KB 足够任何合理的交互页面 */
@@ -36,7 +36,7 @@ export function artifactTools(ctx: ToolCtx) {
       execute: async ({ title, html }) => {
         const bucket = ctx.env.MEMORY_BUCKET;
         if (!bucket) return "云盘未配置，卡片存不了。";
-        const key = scopedKey(ctx.room, "artifact", "html");
+        const key = sessionKey(ctx.room, ctx.sessionId, "artifact", "html");
         await bucket.put(key, html, {
           httpMetadata: { contentType: "text/html; charset=utf-8" },
         });

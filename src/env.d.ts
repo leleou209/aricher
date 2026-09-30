@@ -1,7 +1,9 @@
 // 补充 `wrangler types` 无法推断的 secrets（来自 `wrangler secret` 或 .dev.vars）。
 // 本文件必须是全局脚本（无顶层 import/export），才能与生成的 worker-configuration.d.ts 声明合并。
 
-// vite define 注入的构建号（见 vite.config.ts）：更新检查拿它对开源仓库最新提交
+// vite define 注入的构建期常量（见 vite.config.ts）：版本号是唯一新旧依据（/api/update-check），
+// 构建号只作显示
+declare const __APP_VERSION__: string;
 declare const __GIT_HASH__: string;
 
 interface CoworkSecrets {

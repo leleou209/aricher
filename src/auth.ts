@@ -258,6 +258,24 @@ export async function isAuthed(req: Request, env: Env): Promise<boolean> {
 /** 主人住的那一间屋子（DO 实例名） */
 export const OWNER_AGENT = "default";
 
+/**
+ * 场屋名：一个会话一间屋（完整的 CoworkAgent 运行时）。
+ * 屋名 = 人屋名 + `--` + 场 id。人屋名（default / guest-十六进制 / 卡房名）都不含 `--`，
+ * 场 id 是 base36，所以第一段 `--` 就是分界，解析不会歧义。
+ */
+export function sessionRoom(room: string, sessionId: string): string {
+  return `${room}--${sessionId}`;
+}
+
+/**
+ * 场屋名里的人屋部分；不是场屋（人屋本尊）时返回 null。
+ * 「这间屋归谁管」一律用它判断，别自己做字符串切割 —— 分隔规则改了这里一处兜底。
+ */
+export function ownerRoomOf(name: string): string | null {
+  const i = name.indexOf("--");
+  return i === -1 ? null : name.slice(0, i);
+}
+
 // 卡房缓存：cardId → 绑定的房间。查卡要走主人房 RPC，每个请求都查一趟太浪费；
 // 缓存 60 秒，卡被删后缓存到期自然失效，票就退回派生房（等于变回临时身份）
 const cardRoomCache = new Map<string, { room: string; at: number }>();

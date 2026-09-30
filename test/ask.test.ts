@@ -109,4 +109,59 @@ describe("ask 工具", () => {
     expect(patches).toHaveLength(1);
     expect(ctx.state.asks).toHaveLength(4);
   });
+
+  it("阻塞式：挂起等作答，回答作为工具结果回喂，同一轮接着跑", async () => {
+    const waiters = new Map<string, (a: string) => void>();
+    const { ctx } = makeCtx({ activeSession: "s1" });
+    (
+      ctx as unknown as {
+        waitForAsk: (id: string, onAnswer: (a: string) => void) => void;
+      }
+    ).waitForAsk = (id: string, onAnswer: (a: string) => void) => {
+      waiters.set(id, onAnswer);
+    };
+    const ask = askTools(ctx).ask as unknown as {
+      execute: (a: unknown) => Promise<string>;
+    };
+
+    const pending = ask.execute({
+      question: "走哪条路？",
+      options: ["A", "B"],
+    });
+    // 挂起期间 promise 未决：模型停在这一步等答案
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled).toBe(false);
+    expect(waiters.size).toBe(1);
+
+    // 他答了：答案作为工具结果回来（「他的回答：」的包装在 cowork.resolveAsk 那层）
+    const [id, resolve] = [...waiters.entries()][0];
+    resolve("走 B");
+    const out = await pending;
+    expect(out).toBe("问到了：「走哪条路？」（给了 2 个选项）。走 B");
+    expect(id).toBeTruthy();
+  });
+
+  it("先不答（空答案）：不追加任何回答，交给上层按「自己拿主意」回喂", async () => {
+    const waiters = new Map<string, (a: string) => void>();
+    const { ctx } = makeCtx({ activeSession: "s1" });
+    (
+      ctx as unknown as {
+        waitForAsk: (id: string, onAnswer: (a: string) => void) => void;
+      }
+    ).waitForAsk = (id: string, onAnswer: (a: string) => void) => {
+      waiters.set(id, onAnswer);
+    };
+    const ask = askTools(ctx).ask as unknown as {
+      execute: (a: unknown) => Promise<string>;
+    };
+    const pending = ask.execute({ question: "授权我发吗？" });
+    const [, resolve] = [...waiters.entries()][0];
+    resolve("");
+    const out = await pending;
+    expect(out).toBe("问到了：「授权我发吗？」。");
+  });
 });

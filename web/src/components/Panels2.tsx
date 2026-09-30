@@ -5,7 +5,7 @@
 // 本文件 import 工具只走 ./PanelsShared —— 不许回头 import Panels.tsx（防循环）。
 // ─────────────────────────────────────────────────────────────
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { speak, stopSpeaking } from "../lib/speech";
 import {
@@ -18,6 +18,8 @@ import { Icon } from "./Icons";
 import {
   SHELF_LABEL,
   type ChatState,
+  type DrawConfig,
+  type DrawFormat,
   type GuestType,
   type MemEntry,
   type ModelEntry,
@@ -25,6 +27,8 @@ import {
   type ModelProvider,
   type PublicPost,
   type R2File,
+  type SearchConfig,
+  type SearchFormat,
   type SessionMeta,
   type Shelf,
   type Summary,
@@ -318,31 +322,154 @@ const fmtSize = (n: number) =>
     ? (n / 1024 / 1024).toFixed(1) + "MB"
     : Math.round(n / 1024) + "KB";
 
+/** 空文件夹的占位对象：只负责把空夹撑出来，列表里不当文件显示 */
+const FOLDER_KEEP = ".keep";
+
 /**
  * 云盘里的名字对人不友好：上传的是「时间戳-原名」，他画的是「draw-时间戳.png」。
- * 一列数字摆在列表里，谁也认不出哪张是哪张 —— 所以这里换成能认出来的说法。
+ * 文件名这一层换成能认出来的说法；路径的层次交给树去摆。
  */
-function showFile(key: string): string {
-  const drawn = /^draw-(\d+)\.png$/.exec(key);
+function showFile(name: string): string {
+  const drawn = /^draw-(\d+)\.png$/.exec(name);
   if (drawn) {
     const d = new Date(Number(drawn[1]));
     if (!Number.isFinite(d.getTime())) return "他画的图";
     const pad = (n: number) => String(n).padStart(2, "0");
     return `他画的图 · ${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
-  return key.replace(/^\d+-/, "");
+  return name.replace(/^\d+-/, "");
 }
 
-export function FilePanel() {
+interface FileNode {
+  name: string;
+  /** 从自己范围根算起的相对路径（公开空间用展示名，不在整理范围内） */
+  path: string;
+  /** 完整的桶内 key：文件节点才有 */
+  key: string;
+  dir: boolean;
+  size: number;
+  uploaded: string;
+  /** 会话文件夹的别名：知道是哪一场就显示场名 */
+  label?: string;
+  children: FileNode[];
+}
+
+/** 拼路径：两段都可能是空串，别拼出开头或结尾的斜杠 */
+function joinPath(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
+/**
+ * 把平铺的 key 列表拼成一棵树。文件夹就是 key 里的路径段 ——
+ * .keep 占位对象只负责把空文件夹撑出来，不当文件列；
+ * 自己房间前缀剥掉（那是屋里屋外的划界，不是目录名），
+ * 公开空间给个人话名字。写操作用的还是完整 key，剥的只是显示层。
+ */
+function buildTree(files: R2File[], scope: string): FileNode[] {
+  const root: FileNode = {
+    name: "",
+    path: "",
+    key: "",
+    dir: true,
+    size: 0,
+    uploaded: "",
+    children: [],
+  };
+  const dirs = new Map<string, FileNode>([["", root]]);
+  const ensureDir = (rel: string): FileNode => {
+    const got = dirs.get(rel);
+    if (got) return got;
+    const at = rel.lastIndexOf("/");
+    const parent = ensureDir(at < 0 ? "" : rel.slice(0, at));
+    const node: FileNode = {
+      name: rel.slice(at + 1),
+      path: rel,
+      key: "",
+      dir: true,
+      size: 0,
+      uploaded: "",
+      children: [],
+    };
+    parent.children.push(node);
+    dirs.set(rel, node);
+    return node;
+  };
+  for (const f of files) {
+    const rel =
+      scope && f.key.startsWith(scope)
+        ? f.key.slice(scope.length)
+        : f.key.replace(/^f\/public\//, "公开空间/");
+    if (!rel) continue;
+    if (rel === FOLDER_KEEP || rel.endsWith(`/${FOLDER_KEEP}`)) {
+      ensureDir(rel.slice(0, -(FOLDER_KEEP.length + 1)));
+      continue;
+    }
+    const at = rel.lastIndexOf("/");
+    const parent = ensureDir(at < 0 ? "" : rel.slice(0, at));
+    parent.children.push({
+      name: rel.slice(at + 1),
+      path: rel,
+      key: f.key,
+      dir: false,
+      size: f.size,
+      uploaded: f.uploaded,
+      children: [],
+    });
+  }
+  const sort = (n: FileNode): void => {
+    n.children.sort((a, b) =>
+      a.dir !== b.dir ? (a.dir ? -1 : 1) : a.name.localeCompare(b.name, "zh"),
+    );
+    n.children.forEach(sort);
+  };
+  sort(root);
+  return root.children;
+}
+
+/** 给「会话/<id>」形状的文件夹挂上场名：翻云盘时按场找，比认 id 快 */
+function labelSessions(nodes: FileNode[], titles: Map<string, string>): void {
+  for (const n of nodes) {
+    if (n.dir && n.name === "会话") {
+      for (const c of n.children)
+        if (c.dir) c.label = titles.get(c.name) || `会话 ${c.name.slice(0, 8)}`;
+    }
+    labelSessions(n.children, titles);
+  }
+}
+
+/** 树里所有可作整理去处的文件夹（公开空间是墙，不是抽屉，不进清单） */
+function collectDirs(nodes: FileNode[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    if (!n.dir || !n.path) continue;
+    if (n.path === "公开空间" || n.path.startsWith("公开空间/")) continue;
+    if (n.path === "f/public" || n.path.startsWith("f/public/")) continue;
+    out.push(n.path);
+    collectDirs(n.children, out);
+  }
+  return out;
+}
+
+export function FilePanel({ sessions }: { sessions: SessionMeta[] }) {
   const [files, setFiles] = useState<R2File[]>([]);
+  const [scope, setScope] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   // 和记忆库同理：还没拿到就说「云盘是空的」，是在替用户下一个错的结论
   const [loading, setLoading] = useState(true);
+  /** 展开着的文件夹（相对路径集合） */
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  /** 上传 / 新建落进哪个文件夹（相对路径，"" = 根） */
+  const [target, setTarget] = useState("");
+  /** 正在搬的文件：记 key 和现居文件夹，选好去处再确认 */
+  const [moving, setMoving] = useState<{ key: string; dir: string } | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     try {
-      setFiles((await api.files()).files);
+      const r = await api.files();
+      setFiles(r.files);
+      setScope(r.scope || "");
       setErr("");
     } catch (e) {
       setErr((e as Error).message);
@@ -355,11 +482,25 @@ export function FilePanel() {
     void load();
   }, [load]);
 
+  const titles = useMemo(
+    () => new Map(sessions.map((s) => [s.id, s.title])),
+    [sessions],
+  );
+  const tree = useMemo(() => {
+    const t = buildTree(files, scope);
+    labelSessions(t, titles);
+    return t;
+  }, [files, scope, titles]);
+  const dirOptions = useMemo(() => collectDirs(tree), [tree]);
+
+  /** 相对路径 → 完整 key：写操作都按完整 key 谈 */
+  const fullKey = (rel: string) => scope + rel;
+
   const upload = async (list: FileList | null) => {
     if (!list?.length) return;
     setBusy(true);
     try {
-      for (const f of Array.from(list)) await api.upload(f);
+      for (const f of Array.from(list)) await api.upload(f, target);
       await load();
     } catch (e) {
       setErr((e as Error).message);
@@ -368,45 +509,236 @@ export function FilePanel() {
     }
   };
 
+  const mkdir = async () => {
+    const name = window.prompt("新建文件夹（想一次建几层就用 / 隔开）");
+    if (!name?.trim()) return;
+    setBusy(true);
+    try {
+      await api.mkdir(joinPath(target, name.trim()));
+      setOpen((o) => new Set(o).add(target));
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rename = async (n: FileNode) => {
+    const next = window.prompt(n.dir ? "重命名文件夹" : "重命名文件", n.name);
+    if (!next?.trim() || next.trim() === n.name) return;
+    const at = n.path.lastIndexOf("/");
+    const parent = at < 0 ? "" : n.path.slice(0, at);
+    setBusy(true);
+    try {
+      await api.move(
+        n.dir ? fullKey(n.path) : n.key,
+        fullKey(joinPath(parent, next.trim())),
+      );
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const moveTo = async (n: FileNode, toRel: string) => {
+    setBusy(true);
+    try {
+      await api.move(
+        n.dir ? fullKey(n.path) : n.key,
+        fullKey(joinPath(toRel, n.name)),
+      );
+      setMoving(null);
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rm = async (n: FileNode) => {
+    if (
+      !window.confirm(
+        n.dir
+          ? `删掉文件夹「${n.label || n.name}」？里面的东西会一起没掉。`
+          : `删掉「${showFile(n.name)}」？找不回来了。`,
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      if (n.dir) await api.deleteFolder(fullKey(n.path));
+      else await api.deleteFile(n.key);
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = (path: string) => {
+    setOpen((o) => {
+      const s = new Set(o);
+      if (s.has(path)) s.delete(path);
+      else s.add(path);
+      return s;
+    });
+  };
+
+  const renderNode = (n: FileNode, depth: number): React.ReactElement => {
+    const indent = { paddingLeft: depth * 14 + 2 };
+    // 公开空间是墙不是抽屉：看和下载都行，整理（改名/搬/删）不归这间屋
+    const publicArea = n.path === "公开空间" || n.path.startsWith("公开空间/");
+    const inScope = !publicArea;
+    if (n.dir) {
+      const isOpen = open.has(n.path);
+      return (
+        <Fragment key={n.path}>
+          <li className={`row ${target === n.path ? "file-target" : ""}`}>
+            <div className="row-main">
+              <button
+                className="file-folder"
+                style={indent}
+                onClick={() => {
+                  toggle(n.path);
+                  setTarget(n.path);
+                }}
+                title="点开收起；再点一下设为上传去处"
+              >
+                <Icon name={isOpen ? "book-open" : "bookmark"} size={14} />
+                <span>{n.label || n.name}</span>
+                <span className="meta">
+                  {n.children.length ? `${n.children.length} 项` : "空文件夹"}
+                </span>
+              </button>
+            </div>
+            {inScope && (
+              <>
+                <button
+                  className="row-del"
+                  title="重命名"
+                  onClick={() => rename(n)}
+                >
+                  <Icon name="edit" size={13} />
+                </button>
+                <button
+                  className="row-del"
+                  title="删除文件夹"
+                  onClick={() => rm(n)}
+                >
+                  <Icon name="trash" size={13} />
+                </button>
+              </>
+            )}
+          </li>
+          {isOpen && n.children.map((c) => renderNode(c, depth + 1))}
+        </Fragment>
+      );
+    }
+    const at = n.path.lastIndexOf("/");
+    const myDir = at < 0 ? "" : n.path.slice(0, at);
+    return (
+      <li className="row" key={n.key}>
+        <div className="row-main">
+          <a
+            href={api.fileUrl(n.key)}
+            target="_blank"
+            rel="noreferrer"
+            style={indent}
+          >
+            {showFile(n.name)}
+          </a>
+          <span className="meta">
+            {fmtSize(n.size)} · {n.uploaded.slice(0, 10)}
+          </span>
+        </div>
+        {moving?.key === n.key ? (
+          <>
+            <select
+              className="file-move"
+              value={moving.dir}
+              onChange={(e) => setMoving({ key: n.key, dir: e.target.value })}
+            >
+              <option value="">（云盘根目录）</option>
+              {dirOptions.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+            <button
+              className="row-del"
+              title="确认移动"
+              onClick={() => moveTo(n, moving.dir)}
+            >
+              <Icon name="check" size={13} />
+            </button>
+            <button
+              className="row-del"
+              title="取消"
+              onClick={() => setMoving(null)}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          </>
+        ) : (
+          inScope && (
+            <>
+              <button
+                className="row-del"
+                title="移动到…"
+                onClick={() => setMoving({ key: n.key, dir: myDir })}
+              >
+                <Icon name="maximize" size={13} />
+              </button>
+              <button
+                className="row-del"
+                title="重命名"
+                onClick={() => rename(n)}
+              >
+                <Icon name="edit" size={13} />
+              </button>
+              <button className="row-del" title="删除" onClick={() => rm(n)}>
+                <Icon name="trash" size={13} />
+              </button>
+            </>
+          )
+        )}
+      </li>
+    );
+  };
+
   return (
     <div className="panel-body">
-      <label className="upload">
-        <input
-          type="file"
-          multiple
-          onChange={(e) => upload(e.target.files)}
-          disabled={busy}
-          hidden
-        />
-        {busy ? "上传中…" : "选择文件上传"}
-      </label>
+      <div className="file-toolbar">
+        <label className="upload">
+          <input
+            type="file"
+            multiple
+            onChange={(e) => upload(e.target.files)}
+            disabled={busy}
+            hidden
+          />
+          {busy ? "上传中…" : target ? `上传到「${target}」` : "选择文件上传"}
+        </label>
+        <button className="btn-ghost" onClick={mkdir} disabled={busy}>
+          新建文件夹
+        </button>
+      </div>
       <ul className="rows">
-        {files.map((f) => (
-          <Row
-            key={f.key}
-            onDelete={async () => {
-              await api
-                .deleteFile(f.key)
-                .catch((e: Error) => setErr(e.message));
-              await load();
-            }}
-          >
-            <a href={api.fileUrl(f.key)} target="_blank" rel="noreferrer">
-              {showFile(f.key)}
-            </a>
-            <span className="meta">
-              {fmtSize(f.size)} · {f.uploaded.slice(0, 10)}
-            </span>
-          </Row>
-        ))}
-        {!files.length && (
+        {tree.map((n) => renderNode(n, 0))}
+        {!tree.length && (
           <li className="empty-sm">{loading ? "读取中…" : "云盘是空的"}</li>
         )}
       </ul>
       <p className="meta pad">
-        对话里递进来的文件、他画出来的图，都会存在这里（同一个云盘，只是多一个能翻的地方）。
-        主入口还是输入框旁边的回形针 ——
-        拿着东西直接递给他，比先归档再问他自然得多。
+        对话里递进来的文件、他画出来的图、演示图和卡片，都按会话归在「会话」的各场里；
+        「公开空间」是贴给进门人看的墙，看和下载都行，整理不归这间屋。
+        点文件夹名设为上传去处，再点一下展开收起；重命名、移动、删除都是真删，删前想一下。
       </p>
       {err && <p className="err">{err}</p>}
     </div>
@@ -1684,9 +2016,9 @@ const tokensToK = (n: number): string => `${Math.round(n / 1000)}K`;
 
 /**
  * 模型目录：供应商管「接哪家」（地址、格式、Key 变量名），模型条目挂在各家
- * 底下、随便挂几个，点「设为当前」换着用 —— 一家供应商不再只绑死一个模型。
+ * 底下、随便挂几个 —— 一家供应商不再只绑死一个模型。
  * 厂商表帮人起头（选一家带出地址与坑，都写在 note 里），模型名靠「拉取模型列表」
- * 从厂商现拉现挑；「设为当前」是把这个模型挂上线，下一轮对话就换它出马。
+ * 从厂商现拉现挑。这里只管「有哪些可选」；普通和深度各用哪个，去回复风格页指派。
  * Key 存的是 secret 变量名：Key 本身永远不进浏览器。
  */
 export function ModelConfigsPanel() {
@@ -1826,14 +2158,6 @@ export function ModelConfigsPanel() {
     if (!window.confirm(`删掉「${p.name}」？名下的模型条目会一并删除。`))
       return;
     await api.modelProviderDelete(p.id).catch((e: Error) => setErr(e.message));
-    await load();
-  };
-
-  /** 「设为当前」不需要确认：误点一下，下一轮换回来就是了 */
-  const activateEntry = async (e: ModelEntry) => {
-    await api
-      .modelEntryPatch({ id: e.id, active: true })
-      .catch((er: Error) => setErr(er.message));
     await load();
   };
 
@@ -2035,8 +2359,8 @@ export function ModelConfigsPanel() {
   return (
     <div className="panel-body">
       <p className="meta">
-        一家供应商就是一套接模型的钥匙串，底下想挂几个模型就挂几个；标着「载入中」的是普通模式用的那个，换一个上去，下一轮对话生效。两种模式各用哪个，在设置
-        → 回复风格里指派。
+        一家供应商就是一套接模型的钥匙串，底下想挂几个模型就挂几个。这里只管「有哪些模型可选」；普通和深度两种模式各用哪个，在设置
+        → 回复风格里指派，指派完下一轮对话生效。
       </p>
 
       <h3 className="sect">新增供应商</h3>
@@ -2198,14 +2522,13 @@ export function ModelConfigsPanel() {
                 </button>
               </div>
 
-              {/* 模型条目：这一家挂着的所有模型，点谁「设为当前」谁上线 */}
+              {/* 模型条目：这一家挂着的所有模型；普通模式用哪个，去「回复风格」页指派 */}
               {mine.length > 0 && (
                 <ul className="remind-list">
                   {mine.map((e) => (
                     <li className="remind-row" key={e.id}>
                       <div className="remind-when">
                         <span style={{ fontWeight: 600 }}>{e.model}</span>
-                        {e.active && <span className="tag ok">载入中</span>}
                         <span className="meta">
                           输出上限 {e.maxOutput || "默认"} · 上下文{" "}
                           {e.contextWindow
@@ -2214,14 +2537,6 @@ export function ModelConfigsPanel() {
                         </span>
                       </div>
                       <div className="row-actions">
-                        {!e.active && (
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => void activateEntry(e)}
-                          >
-                            设为当前
-                          </button>
-                        )}
                         <button
                           className="btn btn-ghost btn-sm"
                           onClick={() => startEntryEdit(e)}
@@ -2741,6 +3056,354 @@ export function TtsConfigsPanel() {
       {err && <p className="err">{err}</p>}
 
       <datalist id="tts-key-secrets">
+        {keySecrets.map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+/** 三档的名目与定位。tier 就是配置主键，顺序永远是：high → fast → fallback */
+const DRAW_TIER_META: Record<
+  DrawConfig["tier"],
+  { title: string; desc: string }
+> = {
+  fast: { title: "主力 fast", desc: "日常配图走这档：便宜、不带平台水印" },
+  high: {
+    title: "高质量 high",
+    desc: "按张付费：画立绘、二次元、封面，或者他说「要好看点」时她才升档",
+  },
+  fallback: {
+    title: "兜底 fallback",
+    desc: "前面全栽了才轮到它：能出一张是正事",
+  },
+};
+
+const DRAW_FORMAT_LABEL: Record<DrawFormat, string> = {
+  "workers-ai": "Workers AI 绑定",
+  siliconflow: "硅基流动",
+  zhipu: "智谱",
+};
+
+/** 表单草稿：模型清单在输入框里是逗号分隔的字符串，存库时折回数组 */
+interface DrawDraft {
+  format: DrawFormat;
+  label: string;
+  endpoint: string;
+  models: string;
+  keySecret: string;
+}
+
+const drawDraftOf = (c: DrawConfig): DrawDraft => ({
+  format: c.format,
+  label: c.label,
+  endpoint: c.endpoint,
+  models: c.models.join(", "),
+  keySecret: c.keySecret,
+});
+
+/**
+ * 绘图配置面板：出图三档各一张卡，每档配「出图协议 / 标注名 / 端点 /
+ * 模型降级清单 / key 变量名」，存 draw_configs（见后端 agent/drawConfigs.ts）。
+ * workers-ai 档走平台 AI 绑定（neurons 计费），端点与 key 栏用不上。
+ * 红线同模型/读音两套目录：key 栏填的是 secret 变量名，Key 本体永不进浏览器。
+ */
+export function DrawConfigsPanel() {
+  const [configs, setConfigs] = useState<DrawConfig[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, DrawDraft>>({});
+  const [keySecrets, setKeySecrets] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingTier, setSavingTier] = useState("");
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      // key 变量名候选与模型目录共用一本册子（配过的 secret 名都在那）
+      const [r, catalog] = await Promise.all([
+        api.drawConfigs(),
+        api.modelCatalog(),
+      ]);
+      setConfigs(r.configs);
+      setDrafts(
+        Object.fromEntries(r.configs.map((c) => [c.tier, drawDraftOf(c)])),
+      );
+      setKeySecrets(catalog.keySecrets);
+      setErr("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async (tier: DrawConfig["tier"]) => {
+    const d = drafts[tier];
+    if (!d) return;
+    setSavingTier(tier);
+    setErr("");
+    setSaved("");
+    try {
+      await api.drawConfigPatch({
+        tier,
+        format: d.format,
+        label: d.label.trim(),
+        endpoint: d.endpoint.trim(),
+        keySecret: d.keySecret.trim(),
+        models: d.models
+          .split(/[，,]/)
+          .map((m) => m.trim())
+          .filter(Boolean),
+      });
+      setSaved(`${DRAW_TIER_META[tier].title} 已保存`);
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSavingTier("");
+    }
+  };
+
+  if (loading) return <p className="empty-sm">读取中…</p>;
+
+  return (
+    <div>
+      {err && <p className="err">{err}</p>}
+      {saved && <p className="meta">{saved}</p>}
+      {configs.map((c) => {
+        const d = drafts[c.tier];
+        if (!d) return null;
+        const isBinding = d.format === "workers-ai";
+        const badKey = !isBinding && d.keySecret.trim().startsWith("sk-");
+        return (
+          <div className="panel-body" key={c.tier}>
+            <div className="remind-when">
+              <span style={{ fontWeight: 600 }}>
+                {DRAW_TIER_META[c.tier].title}
+              </span>
+            </div>
+            <p className="meta">{DRAW_TIER_META[c.tier].desc}</p>
+            <div className="inline-form">
+              <select
+                className="field"
+                value={d.format}
+                onChange={(ev) =>
+                  setDrafts({
+                    ...drafts,
+                    [c.tier]: { ...d, format: ev.target.value as DrawFormat },
+                  })
+                }
+              >
+                {(Object.keys(DRAW_FORMAT_LABEL) as DrawFormat[]).map((f) => (
+                  <option key={f} value={f}>
+                    {DRAW_FORMAT_LABEL[f]}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="field"
+                placeholder="标注名（画完图边上那行字）"
+                value={d.label}
+                onChange={(ev) =>
+                  setDrafts({
+                    ...drafts,
+                    [c.tier]: { ...d, label: ev.target.value },
+                  })
+                }
+              />
+            </div>
+            <div className="inline-form">
+              <input
+                className="field"
+                placeholder="出图端点（workers-ai 用不上）"
+                value={d.endpoint}
+                disabled={isBinding}
+                onChange={(ev) =>
+                  setDrafts({
+                    ...drafts,
+                    [c.tier]: { ...d, endpoint: ev.target.value },
+                  })
+                }
+              />
+              <input
+                className="field"
+                placeholder="模型清单（逗号分隔，降级有序）"
+                value={d.models}
+                onChange={(ev) =>
+                  setDrafts({
+                    ...drafts,
+                    [c.tier]: { ...d, models: ev.target.value },
+                  })
+                }
+              />
+            </div>
+            <div className="inline-form">
+              <input
+                className="field"
+                placeholder="key 的 secret 变量名（workers-ai 用不上）"
+                value={d.keySecret}
+                disabled={isBinding}
+                list="draw-key-secrets"
+                onChange={(ev) =>
+                  setDrafts({
+                    ...drafts,
+                    [c.tier]: { ...d, keySecret: ev.target.value },
+                  })
+                }
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={savingTier === c.tier}
+                onClick={() => void save(c.tier)}
+              >
+                {savingTier === c.tier ? "保存中…" : "保存"}
+              </button>
+            </div>
+            {isBinding && (
+              <p className="meta">
+                走平台 AI 绑定，按 neurons 计费，不用配端点和 key。
+              </p>
+            )}
+            {badKey && (
+              <p className="err">
+                这里填的是 secret 变量名，不是 Key 本体 —— Key 用 npx wrangler
+                secret put 配进这台机器。
+              </p>
+            )}
+          </div>
+        );
+      })}
+      <datalist id="draw-key-secrets">
+        {keySecrets.map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+/** 搜索通道的界面用词 */
+const SEARCH_FORMAT_LABEL: Record<SearchFormat, string> = {
+  tavily: "Tavily（自带答案摘要与正文抓取）",
+  brave: "Brave（独立索引、快，只有摘要）",
+};
+
+/**
+ * 搜索配置面板：联网搜索只有一条主通道，配「走哪家 / 用哪把钥匙」，
+ * 存 search_config（见后端 agent/searchConfigs.ts）。没配 key 时自动退化
+ * 为 DuckDuckGo 免费通道，搜索工具照常能用。
+ * 红线同模型/绘图/读音三套目录：key 栏填的是 secret 变量名，Key 本体永不进浏览器。
+ */
+export function SearchConfigsPanel() {
+  const [config, setConfig] = useState<SearchConfig | null>(null);
+  const [keySecrets, setKeySecrets] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      // key 变量名候选与模型目录共用一本册子（配过的 secret 名都在那）
+      const [r, catalog] = await Promise.all([
+        api.searchConfig(),
+        api.modelCatalog(),
+      ]);
+      setConfig(r.config);
+      setKeySecrets(catalog.keySecrets);
+      setErr("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async () => {
+    if (!config) return;
+    setSaving(true);
+    setErr("");
+    setSaved("");
+    try {
+      const next = await api.searchConfigPatch({
+        format: config.format,
+        keySecret: config.keySecret.trim(),
+      });
+      setConfig(next);
+      setSaved("搜索配置已保存，下一轮搜索生效");
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <p className="empty-sm">读取中…</p>;
+  if (!config) return <p className="empty-sm">还没有搜索配置。</p>;
+
+  const badKey = config.keySecret.trim().startsWith("sk-");
+
+  return (
+    <div>
+      {err && <p className="err">{err}</p>}
+      {saved && <p className="meta">{saved}</p>}
+      <p className="meta">
+        联网搜索的主通道：我「先搜一下再回答」时走的就是它。没配
+        key（或通道挂了）会退化成 DuckDuckGo 免费通道 —— 能用，但摘要短、不稳。
+      </p>
+      <div className="panel-body">
+        <div className="inline-form">
+          <select
+            className="field"
+            value={config.format}
+            onChange={(ev) =>
+              setConfig({
+                ...config,
+                format: ev.target.value as SearchFormat,
+              })
+            }
+          >
+            {(Object.keys(SEARCH_FORMAT_LABEL) as SearchFormat[]).map((f) => (
+              <option key={f} value={f}>
+                {SEARCH_FORMAT_LABEL[f]}
+              </option>
+            ))}
+          </select>
+          <input
+            className="field"
+            placeholder="key 的 secret 变量名（留空 = 免费通道）"
+            value={config.keySecret}
+            list="search-key-secrets"
+            onChange={(ev) =>
+              setConfig({ ...config, keySecret: ev.target.value })
+            }
+          />
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={saving}
+            onClick={() => void save()}
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
+        </div>
+        {badKey && (
+          <p className="err">
+            这里填的是 secret 变量名，不是 Key 本体 —— Key 用 npx wrangler
+            secret put 配进这台机器。
+          </p>
+        )}
+      </div>
+      <datalist id="search-key-secrets">
         {keySecrets.map((k) => (
           <option key={k} value={k} />
         ))}

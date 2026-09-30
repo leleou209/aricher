@@ -26,46 +26,84 @@ export function noteTools(ctx: ToolCtx) {
         "note 是「他要留下的东西」（他的原话、成篇、保结构）。" +
         "他让我把一件事写下来留着、或者让我整理他正在写的那一篇，我用 note，不用 memory。\n" +
         "list 看笔记本里有哪些篇（给 q 按词搜，给 tag 按标签筛）；" +
-        "read 读全文（不给 id 就读他此刻正在看的那一篇）；" +
+        "read 读正文（一次最多 " +
+        READ_LIMIT +
+        " 字，没读完的带 offset 续读；不给 id 就读他此刻正在看的那一篇）；" +
         "new 新建一篇；write 整体改写某一篇的正文（⚠️ 这是覆盖式的，他会看到的是我改完的版本）；" +
         "append 在一篇末尾追加一段（不想动他写过的字时走这条）；" +
         "tag 改标签（tags 是要加上的，untag 是要拿掉的）；delete 删掉一整篇。\n" +
         "我改过的字会记成「我改的」，他那边看得出来 —— 所以改完我在对话里说清我动了哪几处。\n" +
-        "覆盖不是不可逆的：代码会替每一篇留最近几个旧版本，他一句「退回去」就能恢复。" +
+        "旧版本代码会替每一篇留最近几个，恢复在面板上做——别跟他说「我来退回去」，我手里没有恢复这一手。" +
         `笔记本上限 ${NOTE_CAP} 篇，单篇正文上限 ${NOTE_BODY_MAX} 字。`,
-      inputSchema: z.object({
-        action: z.enum([
-          "list",
-          "read",
-          "new",
-          "write",
-          "append",
-          "tag",
-          "delete",
-        ]),
-        id: z
-          .string()
-          .optional()
-          .describe(
-            "read/write/append/tag/delete 用的笔记 id（list 里能看到）",
-          ),
-        title: z.string().optional().describe("new/write 选填：这一篇叫什么"),
-        body: z
-          .string()
-          .optional()
-          .describe("new/write 的正文（Markdown 原文）"),
-        text: z
-          .string()
-          .optional()
-          .describe("append 要追加的那一段（Markdown）"),
-        tags: z
-          .string()
-          .optional()
-          .describe("new/write/tag：要加上的标签，逗号分隔"),
-        untag: z.string().optional().describe("tag：要拿掉的标签，逗号分隔"),
-        q: z.string().optional().describe("list：按词搜（命中标题或正文）"),
-        tag: z.string().optional().describe("list：按标签筛，精确命中"),
-      }),
+      inputSchema: z
+        .object({
+          action: z.enum([
+            "list",
+            "read",
+            "new",
+            "write",
+            "append",
+            "tag",
+            "delete",
+          ]),
+          id: z
+            .string()
+            .optional()
+            .describe(
+              "read/write/append/tag/delete 用的笔记 id（list 里能看到）",
+            ),
+          title: z.string().optional().describe("new/write 选填：这一篇叫什么"),
+          body: z
+            .string()
+            .optional()
+            .describe("new/write 的正文（Markdown 原文）"),
+          text: z
+            .string()
+            .optional()
+            .describe("append 要追加的那一段（Markdown）"),
+          tags: z
+            .string()
+            .optional()
+            .describe("new/write/tag：要加上的标签，逗号分隔"),
+          untag: z.string().optional().describe("tag：要拿掉的标签，逗号分隔"),
+          q: z.string().optional().describe("list：按词搜（命中标题或正文）"),
+          tag: z.string().optional().describe("list：按标签筛，精确命中"),
+          offset: z
+            .number()
+            .int()
+            .min(0)
+            .optional()
+            .describe(
+              "read 续读：上次返回里说从第几字接着读，就填那个数；首次读不填",
+            ),
+        })
+        .superRefine((a, refine) => {
+          // action 的条件必填在 schema 层就拦下：写操作缺 id/正文到执行层才报错，
+          // 会被统计记成成功，模型也白花一步
+          const needId =
+            a.action === "write" ||
+            a.action === "append" ||
+            a.action === "tag" ||
+            a.action === "delete";
+          if (needId && !(a.id || "").trim())
+            refine.addIssue({
+              code: "custom",
+              path: ["id"],
+              message: `${a.action} 必填：笔记 id（list 里能看到；read 不给 id 读他正在看的那篇）`,
+            });
+          if ((a.action === "write" || a.action === "new") && !a.body?.trim())
+            refine.addIssue({
+              code: "custom",
+              path: ["body"],
+              message: `${a.action} 必填：正文（Markdown 原文）`,
+            });
+          if (a.action === "append" && !a.text?.trim())
+            refine.addIssue({
+              code: "custom",
+              path: ["text"],
+              message: "append 必填：要追加的那一段（Markdown）",
+            });
+        }),
       execute: (a) => {
         // 标签在工具里是逗号串，到了 store 才是数组 —— 让模型少写一层 JSON 括号
         const split = (s?: string) =>
@@ -98,14 +136,19 @@ export function noteTools(ctx: ToolCtx) {
               ? `没有 id 为 ${a.id} 的那一篇 —— 先用 list 看一眼。`
               : "他这会儿没打开哪一篇笔记。先用 list 挑一篇，或者问他在说哪篇。";
           }
-          const cut =
-            target.body.length > READ_LIMIT
-              ? "\n\n…（后面还有，这一篇挺长）"
+          // 分页读：长文一次全倒给模型既烧钱又挤窗口；没读完的给明确的续读位
+          const offset = Math.max(0, a.offset ?? 0);
+          const slice = target.body.slice(offset, offset + READ_LIMIT);
+          const next = offset + READ_LIMIT;
+          const more =
+            next < target.body.length
+              ? `\n\n…（未读完：正文共 ${target.body.length} 字，这次读到 ${next}。` +
+                `要看后文就再调一次 read，带 offset=${next}）`
               : "";
           return (
             `《${target.title}》${target.tags.length ? `｜标签：${target.tags.join("、")}` : ""}` +
             `｜${target.updatedBy === "assistant" ? "上次我改的" : "上次他改的"}\n` +
-            `id：${target.id}\n\n${target.body.slice(0, READ_LIMIT)}${cut}`
+            `id：${target.id}\n\n${slice}${more}`
           );
         }
 

@@ -34,6 +34,11 @@ export const TOOL_META: Record<
     icon: "maximize",
   },
   weather: { zh: "天气", desc: "查询任意城市的实时天气", icon: "compass" },
+  call_tool: {
+    zh: "工具网关",
+    desc: "按需调用渐进式清单里的工具",
+    icon: "maximize",
+  },
   files: { zh: "云盘文件", desc: "读写云盘上的文件", icon: "clipboard" },
   view_image: {
     zh: "看图",
@@ -43,7 +48,7 @@ export const TOOL_META: Record<
   draw: { zh: "画图", desc: "把一段描述画成一张图", icon: "edit" },
   diagram: {
     zh: "画示意图",
-    desc: "用 SVG 画流程图、架构图、图表",
+    desc: "用 mermaid 画流程图、架构图、时序图",
     icon: "layers",
   },
   send_image: { zh: "发图", desc: "把云盘里存过的图发到对话里", icon: "image" },

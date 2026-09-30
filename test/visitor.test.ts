@@ -76,9 +76,18 @@ function fakeDb(clock: { now: string }) {
     }
 
     if (sql.startsWith("select id, room, nickname, kind, detail, ts")) {
-      const [room, limit] = values as [string, number];
+      // 新形态：room = ? OR room LIKE ?（场屋前缀并账），参数三个 —— 本屋、前缀模式、limit。
+      // 假引擎只认尾通配：LIKE 的 % 当 startsWith 用
+      const [room, like, limit] = values as [string, string, number];
+      const prefix =
+        typeof like === "string" && like.endsWith("%")
+          ? like.slice(0, -1)
+          : null;
       return events
-        .filter((e) => e.room === room)
+        .filter(
+          (e) =>
+            e.room === room || (prefix !== null && e.room.startsWith(prefix)),
+        )
         .sort((a, b) => (a.ts < b.ts ? 1 : -1))
         .slice(0, limit) as T[];
     }

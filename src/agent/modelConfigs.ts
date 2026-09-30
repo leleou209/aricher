@@ -150,13 +150,14 @@ function assertFormat(format: string): void {
 }
 
 /**
- * max_output 只认正整数，其余一律回到 32768。
- * 这是旧链用了很多年的值（第三方兼容层会兜底限到 4096，32K 是留够思考加正文的下限），
- * 与其让一个手滑的 0 把整轮对话掐断，不如悄悄回到这个已知能用的数。
+ * max_output 只认正整数，其余一律回到 131072（128K）。
+ * 主流可用的模型（DeepSeek V4 384K、GPT/Claude 128K 档）输出上限都在 128K 一带，
+ * 默认给够 —— 思考链和大图源码合计吃输出预算，32K 会被「深度思考 + 大图」顶爆。
+ * 厂商真有更低的硬上限时按它配到条目里（claude 8K-64K 档记得单独设）。
  */
 export function toMaxOutput(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
-  return Number.isInteger(n) && n > 0 ? n : 32768;
+  return Number.isInteger(n) && n > 0 ? n : 131072;
 }
 
 /**

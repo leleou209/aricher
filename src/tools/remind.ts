@@ -36,36 +36,66 @@ export function remindTools(ctx: ToolCtx) {
         `现在是北京时间 ${nowInShanghai()}。\n` +
         "at 必须是绝对时间，带时区偏移（例如 2026-09-20T09:00:00+08:00）。" +
         "「明天早上」「两小时后」这类说法你要自己先换算成绝对时刻再传进来。" +
-        "只提醒一次就只给 at；要重复就给 every（cron 表达式，如 0 9 * * * 表示每天九点）。\n" +
+        "只提醒一次就只给 at；要重复就给 every。\n" +
+        "every 推荐用人话格式：「每天 09:00」「每周三 21:30」（北京时间，代码会换算成正确的调度时刻）。" +
+        "也可以给 cron 表达式，但 cron 按 UTC 解释——「0 9 * * *」是北京时间 17 点，不是早上九点，" +
+        "所以固定时刻的重复提醒别自己写 cron。\n" +
         "注意：晚上 23 点到早上 8 点是我的安静时段，那段时间里的一次性提醒我会压到早上八点再说，" +
         "不会丢掉，只是不吵醒他。重复提醒不受影响 —— 那个时刻是他自己排的作息，我照办。" +
         "只有他明说「必须叫醒我」（比如凌晨要吃的药、三点开抢的票）才把 urgent 设成 true；" +
         "拿不准就别设，重要的事放到早上说通常也来得及。",
-      inputSchema: z.object({
-        action: z.enum(["set", "list", "cancel"]),
-        what: z
-          .string()
-          .optional()
-          .describe("set 必填：到点要提醒的事，一句自然语言"),
-        at: z
-          .string()
-          .optional()
-          .describe("set 必填：首次触发时刻，ISO 8601 带时区"),
-        every: z
-          .string()
-          .optional()
-          .describe("重复提醒的 cron 表达式；留空表示只提醒一次"),
-        urgent: z
-          .boolean()
-          .optional()
-          .describe(
-            "set 可选：他明确说了「必须叫醒我」才传 true，否则留空。只对一次性提醒有意义",
-          ),
-        id: z
-          .string()
-          .optional()
-          .describe("cancel 时的提醒 id（先用 list 看）"),
-      }),
+      inputSchema: z
+        .object({
+          action: z.enum(["set", "list", "cancel"]),
+          what: z
+            .string()
+            .optional()
+            .describe("set 必填：到点要提醒的事，一句自然语言"),
+          at: z
+            .string()
+            .optional()
+            .describe("set 必填：首次触发时刻，ISO 8601 带时区"),
+          every: z
+            .string()
+            .optional()
+            .describe(
+              "重复提醒的排期；留空表示只提醒一次。用「每天 09:00」「每周三 21:30」这种北京时间人话格式（推荐），cron 表达式按 UTC 解释",
+            ),
+          urgent: z
+            .boolean()
+            .optional()
+            .describe(
+              "set 可选：他明确说了「必须叫醒我」才传 true，否则留空。只对一次性提醒有意义",
+            ),
+          id: z
+            .string()
+            .optional()
+            .describe("cancel 时的提醒 id（先用 list 看）"),
+        })
+        .superRefine((a, refine) => {
+          // action 的条件必填在 schema 层就拦下：缺参数到执行层才报错，
+          // 会被统计记成一次成功的使用，模型也白花一步
+          if (a.action === "set") {
+            if (!a.what?.trim())
+              refine.addIssue({
+                code: "custom",
+                path: ["what"],
+                message: "set 必填：到点要提醒的事，一句自然语言",
+              });
+            if (!a.at?.trim())
+              refine.addIssue({
+                code: "custom",
+                path: ["at"],
+                message: "set 必填：首次触发时刻（ISO 8601 带时区）",
+              });
+          }
+          if (a.action === "cancel" && !a.id?.trim())
+            refine.addIssue({
+              code: "custom",
+              path: ["id"],
+              message: "cancel 必填：提醒 id（先用 list 看）",
+            });
+        }),
       execute: async (a) => {
         if (a.action === "list") {
           const rows = ctx.listReminders();

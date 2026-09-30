@@ -11,6 +11,46 @@ import type { SqlTag } from "./state";
 
 export type ReminderStatus = "pending" | "done" | "cancelled";
 
+/**
+ * 「每天 09:00」「每周三 21:30」（北京时间）→ 等价的 UTC cron。
+ *
+ * SDK 的 schedule 不收时区，cron 一律按 UTC 解释（agents 内部
+ * parseCronExpression(cron).getNextDate()）—— 说明里写「0 9 * * * 表示
+ * 每天九点」，真响起来是北京时间 17 点。上海 = UTC+8：
+ * 每天的固定点直接平移 8 小时；每周的固定点平移后会跨到前一天，
+ * 星期字段得跟着环回 —— 这步心算不该丢给模型。
+ * 其余输入原样返回：按 cron 表达式处理（UTC 语义），进阶用法自担。
+ */
+export function shanghaiEveryToCron(input: string): string {
+  const raw = input.trim();
+  const WEEKDAY: Record<string, number> = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    日: 0,
+    天: 0,
+  };
+  const week = raw.match(/^每周([一二三四五六日天])\s*(\d{1,2}):(\d{2})$/);
+  if (week) {
+    const shWeekday = WEEKDAY[week[1]];
+    const minutes = Number(week[2]) * 60 + Number(week[3]) - 8 * 60;
+    const shifted = ((minutes % 1440) + 1440) % 1440;
+    const dayShift = Math.floor(minutes / 1440); // 跨日时是 -1
+    const utcWeekday = (((shWeekday + dayShift) % 7) + 7) % 7;
+    return `${shifted % 60} ${Math.floor(shifted / 60)} * * ${utcWeekday}`;
+  }
+  const daily = raw.match(/^每天\s*(\d{1,2}):(\d{2})$/);
+  if (daily) {
+    const minutes = Number(daily[1]) * 60 + Number(daily[2]) - 8 * 60;
+    const shifted = ((minutes % 1440) + 1440) % 1440;
+    return `${shifted % 60} ${Math.floor(shifted / 60)} * * *`;
+  }
+  return raw;
+}
+
 export interface Reminder {
   id: string;
   /** 约定这条提醒时所在的会话；到点后那句话也回到那一场 */

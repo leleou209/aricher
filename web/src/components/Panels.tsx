@@ -9,7 +9,7 @@
 // 样式在 Panels.css：白纸黑字 —— 白底、灰阶、发丝线、黑色块。
 // ─────────────────────────────────────────────────────────────
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import {
   SHELVES,
@@ -282,6 +282,8 @@ export function MemoryPanel() {
   const [shelf, setShelf] = useState<Shelf | "">("");
   const [items, setItems] = useState<MemEntry[]>([]);
   const [q, setQ] = useState("");
+  // 语义检索的请求定序：只有最新一次请求的响应才准许落库（见 load）
+  const reqSeq = useRef(0);
   const [draft, setDraft] = useState("");
   const [draftShelf, setDraftShelf] = useState<Shelf>("knowledge");
   const [err, setErr] = useState("");
@@ -341,28 +343,37 @@ export function MemoryPanel() {
   };
 
   const load = useCallback(async () => {
+    // 每次加载领一个自增序号：请求乱序回来时，旧的那次直接在后面作废，
+    // 免得「先发的慢请求」把「后发的快请求」刚写好的结果覆盖掉
+    const seq = ++reqSeq.current;
     try {
       setErr("");
       // 换筛选条件时也要重新举起这个旗：上一条筛选的结果空着，
       // 不举旗的话会说「这里是空的」，可其实只是还在查
       setLoading(true);
-      if (dueOnly) setItems(await api.memoryDue());
-      else if (doubtOnly) setItems(await api.memoryConflicts());
-      else
-        setItems(
-          q
+      const next = dueOnly
+        ? await api.memoryDue()
+        : doubtOnly
+          ? await api.memoryConflicts()
+          : q
             ? await api.memorySearch(q, showRetired)
-            : await api.memories(shelf || undefined, showRetired),
-        );
+            : await api.memories(shelf || undefined, showRetired);
+      if (seq !== reqSeq.current) return; // 过期响应：丢弃，别 set
+      setItems(next);
     } catch (e) {
+      if (seq !== reqSeq.current) return;
       setErr((e as Error).message);
     } finally {
-      setLoading(false);
+      // 只有最新那次才负责收旗，旧请求回来时不能把 loading 熄掉
+      if (seq === reqSeq.current) setLoading(false);
     }
   }, [q, shelf, showRetired, dueOnly, doubtOnly]);
 
   useEffect(() => {
-    void load();
+    // 打字停下来再查后端（260ms）：语义检索框原来每敲一个字都直打一次；
+    // 序号已在 load 里兜底，过期响应不会覆盖新结果
+    const t = window.setTimeout(() => void load(), 260);
+    return () => window.clearTimeout(t);
   }, [load]);
 
   const add = async () => {

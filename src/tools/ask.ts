@@ -27,7 +27,8 @@ export function askTools(ctx: ToolCtx) {
         "遇到一个只有他能定的地方时，回头问他一句。问题会变成一张卡片摆在他眼前，他可以点你给的选项，也可以自己写。" +
         "用它的时机：你正往下做，但这一步的走向取决于他的偏好或事实，猜错了要白做一遍。" +
         "两件事必须做到：① 同一轮的回复正文里把这个问题说出来 —— 卡片只是入口，只留一张卡不写字，读起来像话说到一半突然卡住；" +
-        "② 问完就停在这一步，别自己替他答了再往下做。已经问过、他还没答的，别重复再问一遍。",
+        "② 问完就等：他的回答会作为这次调用的结果直接回来，你带着答案接着往下做 —— 不需要停下来等下一轮。" +
+        "已经问过、他还没答的，别重复再问一遍。",
       inputSchema: z.object({
         question: z
           .string()
@@ -60,7 +61,8 @@ export function askTools(ctx: ToolCtx) {
         if (pending.length >= PENDING_CAP) {
           return (
             `这场对话里已经压着 ${pending.length} 个没答的问题（${pending.map((x) => `「${x.text}」`).join("")}）。` +
-            "先别再叠了：要么把新问题并进其中一条，要么自己挑一个合理的做法往下走，做完把选择告诉他。"
+            "先别再叠了：口味和做法类的偏好可以自己挑一个合理的往下走，做完把选择告诉他；" +
+            "事实类和要他授权的（只有他知道、只有他能定）不能代答——把新问题并进已有的那条里，等他。"
           );
         }
 
@@ -77,7 +79,15 @@ export function askTools(ctx: ToolCtx) {
           sessionId,
         };
         ctx.patchState({ asks: [...ctx.state.asks, entry] });
-        return `问到了：「${text}」${options.length ? `（给了 ${options.length} 个选项）` : ""}。现在停下，等他答。`;
+        const asked = `问到了：「${text}」${options.length ? `（给了 ${options.length} 个选项）` : ""}。`;
+        // 挂起等他作答：回答/先不答/超时都会 resolve 成一段话 —— 它就是这次
+        // 工具调用的结果，模型在同一轮工作流里接着跑，答案不再是条新消息。
+        // ctx 没配挂起点（后台专用的场景）才退回老路：让模型自己停笔等下一轮。
+        if (!ctx.waitForAsk) return `${asked}现在停下，等他答。`;
+        const answer = await new Promise<string>((resolve) => {
+          ctx.waitForAsk!(entry.id, resolve);
+        });
+        return `${asked}${answer}`;
       },
     }),
   };

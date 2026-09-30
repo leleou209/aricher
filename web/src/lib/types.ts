@@ -214,8 +214,10 @@ export interface ChatState {
   activeSession: string;
   lastActive: number;
   userId: string;
-  /** 来客自己报过的称呼（进门介绍页 / whoami 登记的）；空串 = 还没报过 */
+  /** 来客自己报过的称呼（进门介绍页 / whoami 登记的；管理员房里是主人自己的，设置页可改）；空串 = 还没有 */
   guestName: string;
+  /** 管理员的一句话签名（设置页「个人信息」里写的）；只进界面显示，不进提示词。空串 = 没写过 */
+  adminBio: string;
   /** 来客类型档的快照（连接鉴权时从主人房取来，见后端 guestTypes.ts）；临时票没有这一格 */
   guestType?: GuestTypeInfo;
   /** 复盘游标：已经回看到第几条消息 */
@@ -286,6 +288,7 @@ export const INITIAL_UI_STATE: ChatState = {
   lastActive: 0,
   userId: "",
   guestName: "",
+  adminBio: "",
   expUpto: 0,
   expCount: 0,
   voice: "",
@@ -336,6 +339,8 @@ export interface SessionMeta {
   archived: boolean;
   /** ericher 另开的一场、我还没看过：侧栏里先闪一下，之后留个角标，点进去就清 */
   unread: boolean;
+  /** 这一场宿在哪间屋：空 = 宿在人屋（屋内多场的老模式）；非空 = 独立场屋（人屋--场id），前端按它换连接 */
+  home: string;
 }
 
 /** 跨会话回忆的一次命中：哪一场、谁说的、说了什么 */
@@ -617,6 +622,33 @@ export interface TtsConfig {
   style: string;
 }
 
+/** 绘图的出图协议。决定这一档怎么发请求、尺寸参数叫什么名字 */
+export type DrawFormat = "workers-ai" | "siliconflow" | "zhipu";
+
+/** 绘图配置：出图三档（fast 主力 / high 高质量 / fallback 兜底）各一条 */
+export interface DrawConfig {
+  tier: "fast" | "high" | "fallback";
+  format: DrawFormat;
+  /** 出图端点；workers-ai 走平台 AI 绑定，用不上 */
+  endpoint: string;
+  /** 模型名，降级有序：前面的先试，没成才轮到后面 */
+  models: string[];
+  /** Key 存的是 secret 变量名，不是 Key 本身；workers-ai 档为空 */
+  keySecret: string;
+  /** 结果标注里的供应商名 */
+  label: string;
+}
+
+/** 联网搜索走的通道。Brave 独立索引没有摘要生成；Tavily 自带答案摘要与正文抓取 */
+export type SearchFormat = "tavily" | "brave";
+
+/** 联网搜索配置：单条（搜一下走哪家、用哪把钥匙） */
+export interface SearchConfig {
+  format: SearchFormat;
+  /** Key 存的是 secret 变量名，不是 Key 本体 */
+  keySecret: string;
+}
+
 /** 设置页左导航的条目。工具不在这些条目里 —— 它们在对话里被直接调用，只有技能配方归这里。 */
 /** 外观主题：白纸黑字 / 晨曦微蓝 / 夜墨 / 跟随系统（见 theme.css 的 token 组） */
 export type ThemeKey = "paper" | "dawn" | "dark" | "system";
@@ -634,6 +666,8 @@ export type SettingsKey =
   | "guestTypes"
   | "modelConfigs"
   | "ttsConfigs"
+  | "drawConfigs"
+  | "searchConfigs"
   | "task"
   | "remind"
   | "skills"

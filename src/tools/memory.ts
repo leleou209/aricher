@@ -249,6 +249,8 @@ export function memoryTools(ctx: ToolCtx) {
             .map((o) => `[${o.id}]「${o.content}」`)
             .join("、");
           settleConflicts(sql, a.id);
+          // 疑问销掉的不止一条的记号：两边的「还没对上」都清了，都寄回去
+          ctx.syncMemories?.([a.id, ...target.conflictsWith]);
           return `已销掉 [${a.id}] 的疑问：它和 ${others} 确实不是一回事，都留着。`;
         }
 
@@ -271,6 +273,7 @@ export function memoryTools(ctx: ToolCtx) {
           // 不能拿默认值去覆盖 —— 那会让每次确认都把「会变」悄悄改成「稳定」。
           if (a.volatility) setVolatility(sql, a.id, a.volatility);
           const updated = confirmMemory(sql, a.id);
+          ctx.syncMemories?.([a.id]);
           const now = updated?.volatility === "volatile" ? "会变" : "稳定";
           return (
             `已确认 [${a.id}]「${target.content}」——记下它现在还是这样（标着${now}）。` +
@@ -329,10 +332,15 @@ export function memoryTools(ctx: ToolCtx) {
 
         if (a.action === "search") {
           if (!a.query) return "search 需要提供 query。";
-          const found = await searchMemories(sql, env, a.query, a.limit, {
-            includeSuperseded: a.includeSuperseded,
-            cache: ctx.recallCache,
-          });
+          // 统一入口：场屋本地加主屋各搜一遍合并去重（ctx 没配就本地直搜）
+          const found = ctx.searchMemories
+            ? await ctx.searchMemories(a.query, a.limit, {
+                includeSuperseded: a.includeSuperseded,
+              })
+            : await searchMemories(sql, env, a.query, a.limit, {
+                includeSuperseded: a.includeSuperseded,
+                cache: ctx.recallCache,
+              });
           if (!found.length) return "没有相关记忆。";
           return (
             "🔍 相关记忆：\n" + found.map((e) => `• ${line(e)}`).join("\n")
@@ -345,10 +353,12 @@ export function memoryTools(ctx: ToolCtx) {
           if (!target) return "找不到这条记忆：" + a.id;
           if (a.action === "restore") {
             restoreMemory(sql, a.id);
+            ctx.syncMemories?.([a.id]);
             return `已恢复 [${target.id}] ${target.content}——它重新参与检索了。`;
           }
           if (target.supersededBy) return `[${target.id}] 已经是作废状态了。`;
           supersedeMemory(sql, a.id);
+          ctx.syncMemories?.([a.id]);
           return `已作废 [${target.id}] ${target.content}（内容保留，可 history 回看、可 restore 撤销）。`;
         }
 
@@ -357,6 +367,7 @@ export function memoryTools(ctx: ToolCtx) {
           const removed = deleteMemory(sql, a.id);
           if (!removed) return "找不到这条记忆：" + a.id;
           await deleteVector(env, removed.id).catch(() => {});
+          ctx.syncMemories?.([], [removed.id]);
           return `已删除 [${removed.id}] ${removed.content}`;
         }
 
@@ -446,6 +457,13 @@ export function memoryTools(ctx: ToolCtx) {
             "\n是同一件事的新说法：把旧的那个 id 填进 replaces 再写一次，或者直接 supersede 旧的；" +
             "确实不是一回事：coexist 把这条的 id 给它，疑问就销了。别放着不管。";
         }
+
+        // 新增 + 被连带改动的（作废的旧条目、挂上疑问的相关条目）一并寄回并账
+        ctx.syncMemories?.([
+          entry.id,
+          ...(didReplace && a.replaces ? [a.replaces] : []),
+          ...near.map((n) => n.entry.id),
+        ]);
 
         return (
           `已记忆 [${entry.id}] ${entry.type} · ${entry.shelf}${entry.person ? ` · ${entry.person}` : ""} · 学到${ageLabel(entry.learned)}` +

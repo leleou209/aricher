@@ -20,9 +20,94 @@ export function roomKeyPrefix(room: string): string {
 export const PUBLIC_PREFIX = "f/public/";
 
 /** 给某间屋子生成一个新文件 key：f/<room>/<base>-<时间戳>-<随机段>.<ext> */
-export function scopedKey(room: string, base: string, ext: string): string {
+export function scopedKey(
+  room: string,
+  base: string,
+  ext: string,
+  folder = "",
+): string {
   const rand = crypto.randomUUID().slice(0, 8);
-  return `${roomKeyPrefix(room)}${base}-${Date.now()}-${rand}.${ext}`;
+  const dir = folder ? `${folder}/` : "";
+  return `${roomKeyPrefix(room)}${dir}${base}-${Date.now()}-${rand}.${ext}`;
+}
+
+// ── 虚拟文件夹 ────────────────────────────────────────
+//
+// R2 没有真文件夹，目录就是 key 里的路径前缀。这里把「文件夹」做成纯约定：
+// 产物按会话归档（会话/<id>/…），人建的文件夹是任意路径段，空文件夹用
+// 一个 .keep 占位对象撑着 —— 不迁数据、不建表，旧 key 原地不动就是根下的文件。
+
+/** 会话归档目录名（一段中文路径，树形界面里直接按这个名字显示） */
+export const SESSION_FOLDER = "会话";
+
+/** 建空文件夹时塞进去的占位对象名：列表里不显示，只负责让前缀「存在」 */
+export const FOLDER_KEEP = ".keep";
+
+/**
+ * 给会话产物生成 key：f/<room>/会话/<sessionId>/<base>-<时间戳>-<随机段>.<ext>。
+ * 没有会话（老调用点、场外跑的活）退回旧路 —— 和改造前的行为一字不差。
+ * 产物跟着会话走：回头在云盘树里按会话翻，比在一堆时间戳里大海捞针强。
+ */
+export function sessionKey(
+  room: string,
+  sessionId: string | undefined,
+  base: string,
+  ext: string,
+): string {
+  const rand = crypto.randomUUID().slice(0, 8);
+  const folder = sessionId ? `${SESSION_FOLDER}/${sessionId}/` : "";
+  return `${roomKeyPrefix(room)}${folder}${base}-${Date.now()}-${rand}.${ext}`;
+}
+
+/**
+ * 把人给的文件夹路径洗净成安全的相对路径（"a/b" 形状）。
+ * 每段都得是正经名字：不为空、不是 . 或 ..、不带控制字符和路径分隔符、
+ * 长度有限、层级有限 —— 路径是拿去拼 R2 key 的，这里不干净，
+ * 「移动到 ../别人家/」那种事就会从拼 key 这一步溜进去。不合法直接抛错。
+ */
+export function safeFolder(input: string, maxDepth = 6): string {
+  const segs = String(input)
+    .split("/")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (!segs.length) return "";
+  if (segs.length > maxDepth)
+    throw new Error(`文件夹层级太深（最多 ${maxDepth} 层）`);
+  for (const s of segs) {
+    if (s === "." || s === "..") throw new Error("文件夹名不能是 . 或 ..");
+    if (/[\\/:*?"<>|\u0000-\u001f]/.test(s) || s.length > 80)
+      throw new Error(`文件夹名不合法：${s.slice(0, 20)}`);
+  }
+  return segs.join("/");
+}
+
+/**
+ * 把一整条 key 路径按段洗净（「f/room/子目录/名字」原样保留形状）。
+ * 和 safeFolder 同一套段规则，但不钉房间前缀 —— 前缀划界是调用方的事
+ * （fileScopeFor + assertInScope），这里只管「别让路径长出脚来」。
+ */
+export function safeKeyPath(input: string): string {
+  const segs = String(input)
+    .split("/")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (!segs.length) throw new Error("路径不能为空");
+  if (segs.length > 12) throw new Error("路径层级太深");
+  for (const s of segs) {
+    if (s === "." || s === "..") throw new Error("路径段不能是 . 或 ..");
+    if (/[\\:*?"<>|\u0000-\u001f]/.test(s) || s.length > 80)
+      throw new Error(`路径段不合法：${s.slice(0, 20)}`);
+  }
+  return segs.join("/");
+}
+
+/**
+ * 云盘写操作的范围检查：来客的 key 必须落在自己房间前缀之下，
+ * 管理员 scope 为空串（整只桶）。越界就抛 —— 调用方把话转给界面。
+ */
+export function assertInScope(key: string, scope: string): void {
+  if (scope && !key.startsWith(scope))
+    throw new Error("这个操作超出了你那间的文件范围");
 }
 
 /** 谁能读这个 key：管理员全库可见；来客读自己房间前缀下的，公开空间人人都读得 */

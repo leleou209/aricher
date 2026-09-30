@@ -1,5 +1,11 @@
 // 工具集合入口。所有工具都是原生 AI SDK tool（有 inputSchema + execute），
 // 不再有 [TOOL:xxx] 正则解析。
+//
+// 渐进式披露：主人那间的工具分两层——
+//   常驻（RESIDENT_TOOLS）：schema 全量挂进请求，模型直接调；
+//   渐进式（DEFERRED_TOOLS）：schema 不进请求，系统提示里一行式索引给名字和参数速记，
+//     模型经 call_tool 网关调用（见 gateway.ts），用熟了自动转正常驻（热度粘性）。
+// 不拆来客那间：门面求稳，10 个工具本来就不大。
 
 import type { ToolSet } from "ai";
 import { adminTools } from "./admin";
@@ -20,6 +26,82 @@ import type { ToolCtx } from "./types";
 import { visionTools } from "./vision";
 import { visitorLogTools } from "./visitor";
 import { weatherTools } from "./weather";
+import { gatewayTools, type GatewayCallbacks } from "./gateway";
+
+/**
+ * 常驻工具：模型直接调，schema 全量在场。
+ * 入选标准只有三条硬的：
+ *   - 靠 toModelOutput 回传媒体的（draw、view_image）——网关只回字符串，图会丢；
+ *   - 对话关键件（search、read_url、ask）——多一跳网关，卡壳的代价是整段对话；
+ *   - 小到不值得省的（weather）。
+ */
+export const RESIDENT_TOOLS = [
+  "search",
+  "read_url",
+  "ask",
+  "view_image",
+  "draw",
+  "weather",
+] as const;
+
+/** 渐进式工具：schema 不进请求，经 call_tool 调，用熟了转正。 */
+export const DEFERRED_TOOLS = [
+  "memory",
+  "note",
+  "task",
+  "remind",
+  "recall",
+  "files",
+  "diagram",
+  "send_image",
+  "openSession",
+  "feedback",
+  "skill",
+  "self",
+  "stats",
+  "organize",
+  "set_think_mode",
+  "session_memo",
+  "browse",
+  "artifact",
+] as const;
+
+/** 转正常驻的上限：转满 8 个就不再转，索引照样兜底 */
+export const PROMOTE_CAP = 8;
+
+/**
+ * 组装给模型的那一栈工具：常驻 + 已转正的 + call_tool 网关。
+ * 渐进式的不在返回值里——模型看不见它们的 schema，只能走网关。
+ * 来客那间不拆层，全量返回（门面求稳）。
+ */
+export function buildToolStack(
+  ctx: ToolCtx,
+  opts: { promoted?: string[]; callbacks?: GatewayCallbacks } = {},
+): ToolSet {
+  const all = buildTools(ctx) as Record<string, never>;
+  if (ctx.guest) return all as ToolSet;
+  // 转正名单过滤一遍：工具可能已下架，名单里留着旧名字也不能塞进请求；
+  // 上限在这里兜底——绕过 cowork 的 promotedForStack 直接喂一长串也塞不进来
+  const promoted = (opts.promoted ?? [])
+    .filter(
+      (n) =>
+        all[n] &&
+        (DEFERRED_TOOLS as readonly string[]).includes(n) &&
+        !(RESIDENT_TOOLS as readonly string[]).includes(n),
+    )
+    .slice(0, PROMOTE_CAP);
+  const tools: Record<string, never> = {};
+  for (const n of RESIDENT_TOOLS) if (all[n]) tools[n] = all[n];
+  for (const n of promoted) tools[n] = all[n];
+  const deferred: Record<string, never> = {};
+  for (const n of DEFERRED_TOOLS)
+    if (all[n] && !promoted.includes(n)) deferred[n] = all[n];
+  Object.assign(
+    tools,
+    gatewayTools(deferred, opts.callbacks, promoted as string[]),
+  );
+  return tools as ToolSet;
+}
 
 export type { ToolCtx } from "./types";
 

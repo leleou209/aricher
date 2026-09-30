@@ -177,6 +177,11 @@ export interface ChatState {
   /** 「深度思考」槽位指到哪条模型配置（model_configs.id）；空 = 跟普通模式同一套 */
   deepConfigId: string;
   toolStats: Record<string, ToolStat>;
+  /**
+   * 渐进式工具的转正名单：经 call_tool 用熟了（累计 ≥2 次）的工具升级为常驻，
+   * schema 直接挂进请求，不再走网关。只增不减，上限 8（见 tools/index.ts）。
+   */
+  promotedTools: string[];
   summaries: Summary[];
   /** 当前正在聊的会话 id（sessions 表主键）。空串表示还没建过会话。 */
   activeSession: string;
@@ -202,8 +207,15 @@ export interface ChatState {
    * 来客自报的称呼（memory 工具的 whoami 写入）。
    * 有了它，他名下的记录（person = 来客·称呼）才能跟着称呼走：
    * 换个房间、换台设备，报上这个名字就翻得回来。空串表示还没报过。
+   * 管理员房里这一格是主人自己的称呼 —— POST /api/config 只归管理员，
+   * 能改的只有他自己，设置页「个人信息」里写。
    */
   guestName: string;
+  /**
+   * 管理员的一句话签名（设置页「个人信息」里自己写的）。
+   * 只进界面：左下角身份卡和弹层拿它显示，不拼进提示词。空串 = 没写过。
+   */
+  adminBio: string;
   /**
    * 他此刻正翻着的那一篇笔记（notes 表主键）。空串表示没在看。
    *
@@ -358,6 +370,7 @@ export const INITIAL_STATE: ChatState = {
   // 指派在回复风格页做（管理员），这是全局的一件设置，不跟主线配置绑定
   deepConfigId: "",
   toolStats: {},
+  promotedTools: [],
   summaries: [],
   activeSession: "",
   lastActive: 0,
@@ -366,6 +379,7 @@ export const INITIAL_STATE: ChatState = {
   expCount: 0,
   voice: "",
   guestName: "",
+  adminBio: "",
   noteFocus: "",
   guestTypeId: "",
 };
@@ -394,6 +408,11 @@ export const PATCHABLE_KEYS = [
   "deepConfigId",
   "summaries",
   "voice",
+  // 这两格走的是 POST /api/config，那条路不在 USER_ROUTES 里、只归管理员 ——
+  // 所以「前端改称呼 = 冒别人的名」的口子并没有开：能改的只有主人自己房里的。
+  // 来客的称呼仍只走 guest-intro / whoami 那两扇后端的门。
+  "guestName",
+  "adminBio",
 ] as const;
 
 /**
@@ -402,14 +421,14 @@ export const PATCHABLE_KEYS = [
  */
 export const RUNTIME_ONLY: Record<string, string> = {
   toolStats: "工具调用统计，由后端在调用工具时累加",
+  promotedTools:
+    "渐进式工具的转正名单，由后端按调用热度自动维护；前端改它等于自己给自己发工具",
   activeSession: "由后端的会话切换逻辑决定，前端只能通过 /api/session 请求切换",
   lastActive: "闲置清理的依据，让前端能改等于让它能骗过清理",
   userId: "身份标识，由连接建立时写入",
   expUpto: "复盘游标，只在成功复盘之后由后端推进",
   expCount: "经验条数，由后端在写入 patterns 书架时同步",
   asks: "临时摆着的提问卡，只由 ask 工具写、由答题路由删；前端改它等于凭空造一张卡片",
-  guestName:
-    "来客自报的称呼，由 memory 工具的 whoami 写入；前端改它等于冒别人的名",
   noteFocus:
     "他正在看哪一篇笔记，只能通过 /api/notes/focus 这一个动作改；走 /api/config 改它等于凭空宣称他在看一篇没打开的东西",
   guestTypeId:

@@ -5,7 +5,10 @@
 //
 // 这里是三条并列的路子，各管一件事：
 //   draw       —— 插画、封面、配图。文生图模型出的，有质感、有情绪，但不可控。
-//   diagram    —— 示意图、流程图、架构图、时序图、图表。她自己写 SVG，精确到每一根线。
+//   diagram    —— 示意图、流程图、架构图、时序图、图表。她写 mermaid 源码，渲染器摆线。
+//                 为什么不再让她手写 SVG：坐标是 token 黑洞（一张图几千个字，还容易被
+//                 输出上限拦腰截断），摆出来的对齐和间距也不如渲染器。mermaid 源码几十行、
+//                 只描述「谁连谁」，布局交给前端 —— Cursor / GitHub 的画图全走这条路线。
 //                 文生图模型画这类东西必然走形：框会歪、字会糊、箭头指向随机 ——
 //                 而这些恰恰是示意图的命根子，所以两种得分开。
 //   send_image —— 把云盘里已有的图发到对话里（画过的、存进记忆的）。
@@ -29,38 +32,18 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { insertMemory, searchMemories } from "../agent/memory";
+import type { DrawConfig, DrawTier } from "../agent/drawConfigs";
 import { usage } from "../agent/usage";
-import { scopedKey } from "../fileAccess";
+import { sessionKey } from "../fileAccess";
 import type { ToolCtx } from "./types";
 import { loadImage, mayViewKey } from "./vision";
 
-const IMG_URL = "https://open.bigmodel.cn/api/paas/v4/images/generations";
-
 /**
- * 主力那条路：Workers AI 上的 FLUX.2 klein。
- *
- * 为什么把智谱从主力上撤下来：那边是「由便宜到贵依次试」，最便宜的一档
- * （cogview-3-flash）几乎每张都会先命中 —— 而它出的图正是「有点丑」的根子。
- * 智谱还默认在角上盖「AI生成」四个字，去水印得先去它家后台签免责声明。
- * FLUX 这边不带平台水印，走现成的 AI 绑定、不用另配 key，
- * 一张 1024² 约 26 neurons（¥0.008 上下），每天的免费额度先兜着。
+ * 高质量档与兜底档原来是写死的常量（硅基流动 / 智谱的端点、模型名、降级链），
+ * 现在全部搬进 draw_configs 表变成数据 —— 这里的 SIZES / SF_SIZES 只剩
+ * 「画幅」这一件事：两家的尺寸口径不同，硅基流动横图是 1280x720，
+ * 别把通用那组直接搬过去。
  */
-const FLUX_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
-
-/** 兜底那条路：智谱。FLUX 不通（没绑 AI、额度耗尽、接口改版）时才轮到它 */
-const ZHIPU_MODELS = ["cogview-4-250304", "cogview-3-flash"];
-
-/**
- * 高质量档：硅基流动。国产路线，赛璐璐和二次元结构比 FLUX 正，
- * 主力用 Z-Image-Turbo（出得稳、6 秒上下），Kolors 退在后面当备胎。
- *
- * 反过来先试 Kolors 不行：它是老一代的，画风偏厚涂、细节容易糊；
- * 真到 Z-Image 不通的时候，能出一张是正事，才轮到它。
- */
-const SF_URL = "https://api.siliconflow.cn/v1/images/generations";
-const SF_MODELS = ["Tongyi-MAI/Z-Image-Turbo", "Kwai-Kolors/Kolors"];
-
-/** 画幅。3:4 和 4:3 是多数模型都认的两个尺寸，方图另算。 */
 const SIZES = {
   square: { w: 1024, h: 1024 },
   wide: { w: 1344, h: 768 },
@@ -74,8 +57,8 @@ const SF_SIZES = {
   tall: "768x1024",
 } as const;
 
-/** SVG 上限。示意图是「几百行」的量级；到 200KB 已经不是图，是往里塞东西了 */
-const SVG_CAP = 200_000;
+/** mermaid 源码上限。源码本该是「几十行」的量级；到 100KB 已经不是图，是往里塞东西了 */
+const MMD_CAP = 100_000;
 
 /** 只声明用到的部分，免得依赖生成的 Ai 类型细节（和 memory.ts 里那处同一套写法） */
 interface AiRunner {
@@ -89,10 +72,12 @@ export function drawTools(ctx: ToolCtx): ToolSet {
 
   const draw = tool({
     description:
-      "画一张有质感的图：插画、封面、配图、场景、角色。英文提示词出图更稳，" +
-      "画风、构图、光线都写进去。要画「准确」的东西（流程图、架构图、坐标图、表格图）用 diagram，" +
-      "这条只用来说画面。默认那档便宜够用；画日系动漫、二次元人物、立绘，或者他说要「好看点」的时候，" +
-      "把 quality 提到 high，那档贵一点但明显更像样。画好后把图片地址给你，你要把那行 markdown 放进回复里，他才看得见。",
+      "调用生图模型画一张有质感的艺术图：插画、封面、配图、场景、角色。这条走的是文生图模型 —— " +
+      "质感、光线、情绪都拿手，但内容不可控，画不了需要精确对位的结构。" +
+      "要讲清楚关系和结构（流程图、架构图、时序图、逻辑网络、对比表格），用 diagram 亲自画演示图。" +
+      "英文提示词出图更稳，画风、构图、光线都写进去。默认那档便宜够用；画日系动漫、二次元人物、立绘，" +
+      "或者他说要「好看点」的时候，把 quality 提到 high，那档贵一点但明显更像样。" +
+      "画好后把图片地址给你，你要把那行 markdown 放进回复里，他才看得见。",
     inputSchema: z.object({
       prompt: z
         .string()
@@ -129,36 +114,36 @@ export function drawTools(ctx: ToolCtx): ToolSet {
       let meta = "";
 
       // 来客一律走便宜档：高质量那档花的是管理员的钱，不该由路过的人替他决定
-      const tier = ctx.guest ? "fast" : quality;
+      const tier: DrawTier = ctx.guest ? "fast" : quality;
+      const tiers = await ctx.drawTiers();
 
-      // 她点了 high 就先走贵的这档；这档没成会自动往下掉到 FLUX，不会白花一次
-      if (tier === "high") {
-        const hi = await siliconFlowDraw(ctx.env, prompt, shape, errors);
-        if (hi) {
-          bytes = hi.bytes;
-          meta = hi.meta;
-        }
-      }
-      if (!bytes) {
-        try {
-          bytes = await fluxDraw(ctx.env, prompt, w, h);
-          meta = `FLUX.2 klein · ${size}`;
-        } catch (e) {
-          errors.push(`FLUX：${(e as Error).message.slice(0, 120)}`);
-        }
-      }
-      if (!bytes) {
-        const back = await zhipuDraw(ctx.env, prompt, size, errors);
-        if (back) {
-          bytes = back.bytes;
-          meta = back.meta;
+      // 降级链是配置驱动的（每档用哪家、哪个模型、哪把钥匙都是 draw_configs
+      // 里的数据）：high 先走贵的，没成掉 fast，最后兜底 —— 没成的那档会把
+      // 原因留在 errors 里，全都栽了才把清单交出去
+      const order: DrawTier[] =
+        tier === "high" ? ["high", "fast", "fallback"] : ["fast", "fallback"];
+      for (const t of order) {
+        const got = await drawWith(
+          ctx.env,
+          tiers[t],
+          prompt,
+          shape,
+          w,
+          h,
+          errors,
+        );
+        if (got) {
+          bytes = got.bytes;
+          meta = got.meta;
+          break;
         }
       }
       if (!bytes) return "这次没画成：\n" + errors.join("\n");
 
       // 存进云盘再给他看：供应商给的地址有有效期，过几天他自己翻回来就是一片空白。
-      // key 带房间前缀 + 随机段：来客读图靠它划界，也免得光靠时间戳就能撞名
-      const key = scopedKey(ctx.room, "draw", "png");
+      // key 带房间前缀 + 会话文件夹 + 随机段：来客读图靠它划界，产物按场归档，
+      // 也免得光靠时间戳就能撞名
+      const key = sessionKey(ctx.room, ctx.sessionId, "draw", "png");
       await ctx.env.MEMORY_BUCKET.put(key, bytes, {
         httpMetadata: { contentType: "image/png" },
       });
@@ -196,18 +181,30 @@ export function drawTools(ctx: ToolCtx): ToolSet {
 
   const diagram = tool({
     description:
-      "画一张准确的示意图：流程图、架构图、时序图、状态机、思维导图、坐标图、折线/柱状图、" +
-      "结构拆解、对比表格图。你自己写 SVG 源码，我存成图片给他看 —— 每一根线、每一个字都由你摆，" +
-      "所以它不会走形。要画有质感、有情绪的插画用 draw，这条只负责把结构讲清楚。",
+      "亲自画一张演示图（不是调用生图模型）：流程图、架构图、时序图、状态机、ER 图、" +
+      "思维导图、时间线、关系网络。你写 mermaid 源码，渲染器负责把节点和连线摆整齐 —— " +
+      "布局、配色、对齐全都不用你操心，你只管把节点和关系写对。\n" +
+      "图的价值在关系完整：层级、分支、循环、例外路径都要如实画出来。" +
+      "几十个节点、五六层嵌套、来回循环都是正常的 —— 宁可一张写全的大图，" +
+      "也不要几张各说一半的小图；为省事压缩或省略节点，等于把图毁了。\n" +
+      "复杂结构分层表达：同层归 subgraph，跨层连边，循环和双向关系照实写。\n" +
+      "**凡是给他看结构，必须当场调用本工具出图，不许用文字示意或口头描述代替** —— " +
+      "「大概是这样：A → B → C」这种不算画图。\n" +
+      "要画有质感、有情绪的艺术图（插画、封面、场景、角色）用 draw —— 那是另一条路：模型生成，画不了精确结构。",
     inputSchema: z.object({
-      svg: z
+      mermaid: z
         .string()
         .describe(
-          "完整的 SVG 源码，从 <svg 开始到 </svg> 结束（外面别包 ``` 围栏，也别加解释）。" +
-            '<svg> 上必须写 xmlns="http://www.w3.org/2000/svg" 和 viewBox（横图建议 0 0 800 500 一类，' +
-            '四周留 20 左右的边距）。文字写 font-family="sans-serif" 与 font-size，别依赖外部字体；' +
-            "线条用 stroke 加 stroke-width，别用外链图片和脚本。这张图会贴在深色界面上，" +
-            '底色自己铺（比如先画一个 fill="#0f172a" 的 rect 铺满），字用浅色；配色两三个就够。',
+          "完整的 mermaid 源码（别包 ``` 围栏，也别加解释）。第一行声明图型：" +
+            "flowchart（流程/架构/关系网络）、sequenceDiagram（时序）、stateDiagram-v2（状态机）、" +
+            "classDiagram（类/结构）、erDiagram（实体关系）、mindmap（思维导图）、timeline（时间线）、" +
+            "pie / gantt / gitGraph。\n" +
+            "写法要点：节点 id 用短英文，label 带特殊字符（括号、引号）就用引号包住；" +
+            "箭头写 --> 与 -.->，双向和循环用 A <--> B 或两条单向；连线文字用 |标签|；" +
+            "分层用 subgraph 名字 … end。\n" +
+            "别手写坐标和颜色 —— 渲染器全包。\n" +
+            "节点写全、关系写全：内容是图的命，行数不用省。只有真的堆到上百行才拆，" +
+            "且拆之前先把全景那张画出来。",
         ),
       title: z
         .string()
@@ -219,24 +216,29 @@ export function drawTools(ctx: ToolCtx): ToolSet {
           "true = 把这张示意图存进记忆（type=image）。他说「以后还要看」「存着」的时候才用",
         ),
     }),
-    execute: async ({ svg, title, keep }) => {
-      const clean = extractSvg(svg);
+    execute: async ({ mermaid, title, keep }) => {
+      const clean = extractMermaid(mermaid);
       if (!clean)
-        return "这段 SVG 存不下来：我需要一段完整的 <svg …>…</svg>（从 <svg 开始，到 </svg> 结束）。";
-      if (clean.length > SVG_CAP) {
-        return `这张图太大了（${Math.round(clean.length / 1024)}KB），简化一下再来——示意图不该有这么多笔画。`;
+        return (
+          "这段源码存不下来：我需要一段 mermaid 图源码，第一行得是图型声明" +
+          "（flowchart / sequenceDiagram / stateDiagram-v2 / erDiagram / mindmap 一类）。" +
+          "外面别包 ``` 围栏，也别加解释。"
+        );
+      if (clean.length > MMD_CAP) {
+        return `这张图太大了（${Math.round(clean.length / 1024)}KB），拆成几张小图分次画。`;
       }
-      const key = scopedKey(ctx.room, "diagram", "svg");
+      const key = sessionKey(ctx.room, ctx.sessionId, "diagram", "mmd");
       await ctx.env.MEMORY_BUCKET.put(key, clean, {
-        httpMetadata: { contentType: "image/svg+xml" },
+        httpMetadata: { contentType: "text/plain; charset=utf-8" },
       });
       const kept = keep ? keepMemory(ctx, title, key) : "";
       const url = `/api/files/${key}`;
+      const lines = clean.split("\n").length;
       return handOff(
         `图已经画好了：${url}`,
         title,
         url,
-        `SVG 示意 · ${Math.round(clean.length / 1024)}KB`,
+        `Mermaid 示意 · ${lines} 行`,
         kept,
       );
     },
@@ -258,7 +260,8 @@ export function drawTools(ctx: ToolCtx): ToolSet {
         .string()
         .optional()
         .describe(
-          "云盘文件名，形如 draw-1730000000000.png 或 diagram-1730000000000.svg",
+          "云盘文件名，形如 draw-1730000000000.png、diagram-1730000000000.mmd（mermaid 示意图）" +
+            "或 diagram-*.svg（早先画的旧图）",
         ),
       query: z
         .string()
@@ -281,7 +284,10 @@ export function drawTools(ctx: ToolCtx): ToolSet {
       const url = `/api/files/${encodeURIComponent(found.key)}`;
       const alt = note?.trim() || found.content.slice(0, 30) || "图片";
       const seen = found.content ? `这是当时存下的：${found.content}\n\n` : "";
-      return `${seen}把下面这行原样放进你的回复里（别改动括号里的地址）：\n![${alt}](${url})`;
+      const fallbackNote = found.fallback
+        ? "\n\n（检索没通，这是最近存的一张，不一定是他要的那张 —— 跟他说清楚。）"
+        : "";
+      return `${seen}把下面这行原样放进你的回复里（别改动括号里的地址）：\n![${alt}](${url})${fallbackNote}`;
     },
   });
 
@@ -339,6 +345,10 @@ export function imageKeyIn(text: string): string | null {
  * keep 是 opt-in —— 不设闸的话，画得越多记忆库越像图床，检索会被废图淹掉。
  */
 function keepMemory(ctx: ToolCtx, content: string, fileKey: string): string {
+  // 来客那档关了记忆登记：图仍留在云盘（点开就能看），但不能从这条侧路绕过
+  // 档位把行写进记忆库 —— 档位承诺的是「不落库」，不是「少落一条」
+  if (ctx.guest && ctx.guestType && !ctx.guestType.permMemory)
+    return "\n（他这一档没开记忆登记，图只放在云盘，没有进记忆库。）";
   try {
     const mem = insertMemory(ctx.sql, {
       type: "image",
@@ -365,7 +375,7 @@ async function findImage(
   ctx: ToolCtx,
   key?: string,
   query?: string,
-): Promise<{ key: string; content: string } | null> {
+): Promise<{ key: string; content: string; fallback?: boolean } | null> {
   const k = (key || "").trim();
   if (k) {
     const obj = await ctx.env.MEMORY_BUCKET.head(k);
@@ -374,50 +384,102 @@ async function findImage(
   const q = (query || "").trim();
   if (!q) return null;
   try {
-    const hits = await searchMemories(ctx.sql, ctx.env, q, 8, {
-      cache: ctx.recallCache,
-    });
+    // 统一入口：场屋连主屋的图像记忆一起搜（别场存过的图这边也找得回）
+    const hits = ctx.searchMemories
+      ? await ctx.searchMemories(q, 8)
+      : await searchMemories(ctx.sql, ctx.env, q, 8, {
+          cache: ctx.recallCache,
+        });
     const hit = hits.find((e) => e.type === "image" && e.fileKey);
     if (hit) return { key: hit.fileKey, content: hit.content };
+    // 查询没命中就照实说没找到：把最近一张顶上去，八成不是他要的那张 ——
+    // 「不是上次那张图」比「没找到」更伤信任
+    return null;
   } catch {
-    // 向量检索没通不该让「发图」整条废掉：退到库里最近存的那张图像记忆
+    // 向量检索没通才退到最近存的一张兜底；外层会说明这是备选
   }
   const rows = ctx.sql<{ file_key: string; content: string }>`
     SELECT file_key, content FROM memories
     WHERE type = 'image' AND file_key != '' AND superseded_by = ''
     ORDER BY learned DESC LIMIT 1`;
   const r = rows[0];
-  return r ? { key: r.file_key, content: r.content } : null;
+  return r ? { key: r.file_key, content: r.content, fallback: true } : null;
 }
 
 /**
- * 模型常常把 SVG 包在 ``` 围栏里，或者前后带一句「这是源码」——
- * 这里只取 <svg …>…</svg> 那一段，其余一概不要。
+ * 模型常常把源码包在 ``` 围栏里，或者前后带一句「这是源码」——
+ * 有围栏取围栏内；没围栏就从第一行图型声明开始取到结尾。
+ * 没有图型声明的不算 mermaid 图，收进来前端也渲不出东西，宁可让她重发。
  */
-export function extractSvg(raw: string): string | null {
-  const start = raw.indexOf("<svg");
-  const end = raw.lastIndexOf("</svg>");
-  if (start < 0 || end < 0 || end < start) return null;
-  return raw.slice(start, end + "</svg>".length);
+const MMD_HEADS =
+  /^(flowchart|graph|sequenceDiagram|stateDiagram(?:-v2)?|classDiagram|erDiagram|mindmap|journey|gantt|pie|gitGraph|timeline|zenuml|sankey-beta|architecture-beta|quadrantChart|xychart-beta|block-beta|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/;
+
+export function extractMermaid(raw: string): string | null {
+  const fenced = /```(?:mermaid)?[^\n]*\n([\s\S]*?)```/.exec(raw);
+  const body = (fenced ? fenced[1] : raw).trim();
+  const lines = body.split("\n");
+  const headAt = lines.findIndex(
+    (l) =>
+      l.trim() !== "" && !l.trim().startsWith("%%") && MMD_HEADS.test(l.trim()),
+  );
+  if (headAt < 0) return null;
+  // 图头前面紧挨着的 %% 注释行是源码的一部分，带上；再往前的解释文字才是要剔的
+  let start = headAt;
+  while (start > 0) {
+    const prev = lines[start - 1].trim();
+    if (prev === "" || prev.startsWith("%%")) start--;
+    else break;
+  }
+  return lines.slice(start).join("\n").trim() || null;
 }
 
-// ── 出图的三条路（便宜档 / 高质量档 / 兜底）─────────────
+// ── 出图（配置驱动，见 drawConfigs.ts）──────────────────
+
+/** 从 env 里按变量名取 key；不是字符串一律当没配（和 tts.ts 那处同一套写法） */
+function envKey(env: Env, name: string): string {
+  const v = (env as unknown as Record<string, unknown>)[name || ""];
+  return typeof v === "string" ? v : "";
+}
 
 /**
- * 主力：Workers AI 上的 FLUX.2 klein。
+ * 按一档配置出一张图。没配好（缺 key、缺端点、接口栽了）不算异常 ——
+ * push 一条人话原因就返回 null，让降级链接着走；全链都栽了才报错。
+ */
+async function drawWith(
+  env: Env,
+  cfg: DrawConfig,
+  prompt: string,
+  shape: keyof typeof SIZES,
+  w: number,
+  h: number,
+  errors: string[],
+): Promise<{ bytes: ArrayBuffer; meta: string } | null> {
+  if (cfg.format === "workers-ai")
+    return workersAiDraw(env, cfg, prompt, w, h, errors);
+  return externalDraw(env, cfg, prompt, shape, errors);
+}
+
+/**
+ * workers-ai 档：走 Workers AI 绑定。
  *
  * 这家模型的入参是 multipart 表单，不是 JSON —— prompt 和尺寸都得当字段塞进去，
  * 所以不能直接 fetch，得把 FormData 包成 Response 再取 body 交给 run。
- * 回的是 base64（不是地址），省了一次下载。
+ * 回的是 base64（不是地址），省了一次下载。models 取第一个 —— 绑定内没有
+ * 「换一家再试」这回事，换模型就是改配置。
  */
-async function fluxDraw(
+async function workersAiDraw(
   env: Env,
+  cfg: DrawConfig,
   prompt: string,
   w: number,
   h: number,
-): Promise<ArrayBuffer> {
+  errors: string[],
+): Promise<{ bytes: ArrayBuffer; meta: string } | null> {
   const ai = env.AI as unknown as AiRunner | undefined;
-  if (!ai) throw new Error("没绑 Workers AI");
+  if (!ai) {
+    errors.push(`${cfg.label}：没绑 Workers AI`);
+    return null;
+  }
 
   const form = new FormData();
   form.append("prompt", prompt);
@@ -425,118 +487,91 @@ async function fluxDraw(
   form.append("height", String(h));
   const wrapped = new Response(form);
 
-  const out = (await ai.run(FLUX_MODEL, {
+  const out = (await ai.run(cfg.models[0], {
     multipart: {
       body: wrapped.body,
       contentType: wrapped.headers.get("content-type") || "multipart/form-data",
     },
   })) as { image?: string };
-  if (!out?.image) throw new Error("回里没有图");
+  if (!out?.image) {
+    errors.push(`${cfg.label}：回里没有图`);
+    return null;
+  }
   // 成了才记账：烧的是 CF 的 neurons 额度（见 usage.ts），失败的那几次不算
   usage.noteFluxImage(w, h);
-  return fromBase64(out.image);
+  return { bytes: fromBase64(out.image), meta: `${cfg.label} · ${w}x${h}` };
 }
 
 /**
- * 高质量档：硅基流动。
- *
- * 它回的是图片地址（不是 base64），而且地址是他们的临时桶、一小时就过期，
- * 所以必须当场下下来存进自己的云盘 —— 这也正是下面那段 fetchImage 的活。
- *
- * 为什么失败不直接报错、而是往下掉到 FLUX：她已经挑了「要好看的」这一档，
- * 这时候交出一张普通档的图，比交出一句「没画成」有用得多。
+ * 外部两家（siliconflow / zhipu）共用的调用路径：端点、模型清单、key 变量名
+ * 全部来自配置。两家的差异只剩三处入参/回包形状，都在下面按 format 分岔：
+ *   siliconflow —— image_size 入参、回 images[].url（临时桶，一小时过期，
+ *                  拿到就得当场下进自己的云盘，见 fetchImage）；
+ *   zhipu       —— size 入参、回 data[].url 或 b64_json。
  */
-async function siliconFlowDraw(
+async function externalDraw(
   env: Env,
+  cfg: DrawConfig,
   prompt: string,
-  shape: keyof typeof SF_SIZES,
+  shape: keyof typeof SIZES,
   errors: string[],
 ): Promise<{ bytes: ArrayBuffer; meta: string } | null> {
-  const apiKey = env.SILICONFLOW_API_KEY;
+  const apiKey = envKey(env, cfg.keySecret);
   if (!apiKey) {
-    errors.push("硅基流动：SILICONFLOW_API_KEY 没配");
+    errors.push(`${cfg.label}：${cfg.keySecret || "key 变量名"} 没配`);
     return null;
   }
-  const size = SF_SIZES[shape];
-  for (const model of SF_MODELS) {
+  if (!cfg.endpoint) {
+    errors.push(`${cfg.label}：出图端点没配`);
+    return null;
+  }
+  const size =
+    cfg.format === "siliconflow"
+      ? SF_SIZES[shape]
+      : `${SIZES[shape].w}x${SIZES[shape].h}`;
+  for (const model of cfg.models) {
     try {
-      const r = await fetch(SF_URL, {
+      const r = await fetch(cfg.endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: "Bearer " + apiKey,
         },
-        body: JSON.stringify({
-          model,
-          prompt,
-          image_size: size,
-          batch_size: 1,
-        }),
+        body: JSON.stringify(
+          cfg.format === "siliconflow"
+            ? { model, prompt, image_size: size, batch_size: 1 }
+            : { model, prompt, size },
+        ),
       });
       if (!r.ok) {
         errors.push(
-          `${model}：HTTP ${r.status} ${(await r.text()).slice(0, 120)}`,
-        );
-        continue;
-      }
-      const j = (await r.json()) as { images?: Array<{ url?: unknown }> };
-      const bytes = await fetchImage(j.images?.[0]?.url, undefined);
-      if (!bytes) {
-        errors.push(`${model}：没拿到图`);
-        continue;
-      }
-      // 标出「哪家 + 硅基流动」，和默认那档的 FLUX.2 klein 一眼分得开
-      return { bytes, meta: `${model.split("/").pop()} · 硅基流动 · ${size}` };
-    } catch (e) {
-      errors.push(`${model}：${(e as Error).message.slice(0, 120)}`);
-    }
-  }
-  return null;
-}
-
-/**
- * 兜底：智谱。FLUX 那边不通时才走这里，所以顺序上「好一点的先试」——
- * 都到兜底了，质量比省那几分钱要紧。
- */
-async function zhipuDraw(
-  env: Env,
-  prompt: string,
-  size: string,
-  errors: string[],
-): Promise<{ bytes: ArrayBuffer; meta: string } | null> {
-  const apiKey = env.ZHIPU_KEY;
-  if (!apiKey) {
-    errors.push("智谱：ZHIPU_KEY 没配");
-    return null;
-  }
-  for (const model of ZHIPU_MODELS) {
-    try {
-      const r = await fetch(IMG_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + apiKey,
-        },
-        body: JSON.stringify({ model, prompt, size }),
-      });
-      if (!r.ok) {
-        errors.push(
-          `${model}：HTTP ${r.status} ${(await r.text()).slice(0, 120)}`,
+          `${cfg.label}/${model}：HTTP ${r.status} ${(await r.text()).slice(0, 120)}`,
         );
         continue;
       }
       const j = (await r.json()) as {
+        images?: Array<{ url?: unknown }>;
         data?: Array<{ url?: unknown; b64_json?: unknown }>;
       };
-      const first = j.data?.[0];
-      const bytes = first ? await fetchImage(first.url, first.b64_json) : null;
+      const first =
+        cfg.format === "siliconflow"
+          ? { url: j.images?.[0]?.url, b64: undefined }
+          : { url: j.data?.[0]?.url, b64: j.data?.[0]?.b64_json };
+      const bytes = await fetchImage(first.url, first.b64);
       if (!bytes) {
-        errors.push(`${model}：没拿到图`);
+        errors.push(`${cfg.label}/${model}：没拿到图`);
         continue;
       }
-      return { bytes, meta: `${model} · ${size}` };
+      // 硅基流动的模型名带命名空间（Tongyi-MAI/Z-Image-Turbo），标注取短名
+      const short =
+        cfg.format === "siliconflow"
+          ? (model.split("/").pop() ?? model)
+          : model;
+      return { bytes, meta: `${short} · ${cfg.label} · ${size}` };
     } catch (e) {
-      errors.push(`${model}：${(e as Error).message.slice(0, 120)}`);
+      errors.push(
+        `${cfg.label}/${model}：${(e as Error).message.slice(0, 120)}`,
+      );
     }
   }
   return null;

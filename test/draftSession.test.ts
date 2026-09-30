@@ -31,9 +31,12 @@ function makeDb() {
     // ensureSessionSchema 里的 ALTER 全被 try/catch 包着：
     // 假库在这里抛错，正好像「列已存在」一样被吞掉
     if (q.startsWith("alter table")) throw new Error("列已存在");
-    if (q.startsWith("insert into sessions")) {
+    if (
+      q.startsWith("insert into sessions") ||
+      q.startsWith("insert or ignore into sessions")
+    ) {
       const cols = q
-        .match(/insert into sessions \(([^)]*)\)/)![1]
+        .match(/insert (?:or ignore )?into sessions \(([^)]*)\)/)![1]
         .split(",")
         .map((s) => s.trim());
       const rec: Record<string, unknown> = {};
@@ -85,6 +88,8 @@ const userMsg = (text: string): UIMessage =>
 
 function harness(
   opts: {
+    /** 屋名：目录屋默认 default；场屋测试传 "default--s-fixed" 这类 */
+    name?: string;
     activeSession?: string;
     messages?: UIMessage[];
   } = {},
@@ -97,6 +102,15 @@ function harness(
     string,
     unknown
   > & { state: Record<string, unknown>; messages: UIMessage[] };
+  Object.defineProperty(self, "name", {
+    value: opts.name ?? "default",
+    configurable: true,
+  });
+  // 场屋落位回报走 ctx.waitUntil，测试里不用真排
+  Object.defineProperty(self, "ctx", {
+    value: { waitUntil: () => {} },
+    configurable: true,
+  });
   Object.defineProperty(self, "db", { value: db.tag, configurable: true });
   Object.defineProperty(self, "messages", {
     value: opts.messages ?? [],
@@ -121,22 +135,25 @@ function harness(
   return { db, self, call };
 }
 
-describe("预备会话：读路径不落库", () => {
-  it("createSession 不点名 → 只立预备栏，库里的会话一行都不多", async () => {
+describe("预备会话：读路径不落库（目录屋）", () => {
+  it("createSession 不点名 → 目录一行不多，眼前的场原地不动，meta 带新场屋名", async () => {
     const { db, self, call } = harness({ activeSession: "s-old" });
     db.sessionRows.set("s-old", { id: "s-old", title: "旧场" });
 
-    const r = await call<unknown>("createSession");
-    expect(r).toBeNull();
-    expect(db.sessionRows.size).toBe(1); // 旧场还在，没有新行
-    expect((self.state as { activeSession: string }).activeSession).not.toBe(
+    const r = await call<{
+      id: string;
+      home: string;
+      msgCount: number;
+    } | null>("createSession");
+    expect(r).not.toBeNull();
+    // 开新会话 = 开一间新场屋，home 就是那间屋的名字
+    expect(r!.home).toBe(`default--${r!.id}`);
+    expect(r!.msgCount).toBe(0);
+    expect(db.sessionRows.size).toBe(1); // 没点名的场连目录行都不立
+    // 并行的根基：当前那场一动不动，连指向都不换 —— 新场是另一间屋的事
+    expect((self.state as { activeSession: string }).activeSession).toBe(
       "s-old",
     );
-    expect(
-      db.sessionRows.has(
-        (self.state as { activeSession: string }).activeSession,
-      ),
-    ).toBe(false); // 当前指向是预备栏，库里没有它
   });
 
   it("删掉当前会话 → 不再立刻生成一行「新会话」，指向换成新预备栏", async () => {
@@ -215,17 +232,89 @@ describe("预备会话：开口才转正", () => {
     expect(db.sessionRows.size).toBe(1);
   });
 
-  it("点名开的会话（闲置归档路径）→ 直接落库，不进预备栏", async () => {
-    const { db, call } = harness({ activeSession: "s-old" });
+  it("createSession 点名 → 目录当场落一行指路牌，眼前的场不动", async () => {
+    const { db, self, call } = harness({ activeSession: "s-old" });
     db.sessionRows.set("s-old", { id: "s-old", title: "旧场" });
 
-    const meta = await call<{ id: string; title: string; named: boolean }>(
-      "createSession",
-      "很久以前",
-    );
+    const meta = await call<{
+      id: string;
+      title: string;
+      named: boolean;
+      home: string;
+    } | null>("createSession", "很久以前");
     expect(meta).not.toBeNull();
-    expect(meta.title).toBe("很久以前");
-    expect(meta.named).toBe(true);
-    expect(db.sessionRows.size).toBe(2); // 旧场 + 新落库的这场
+    expect(meta!.title).toBe("很久以前");
+    expect(meta!.named).toBe(true);
+    expect(meta!.home).toBe(`default--${meta!.id}`);
+    expect(db.sessionRows.size).toBe(2); // 旧场 + 目录里这行指路牌
+    expect(db.sessionRows.get(meta!.id)!.home).toBe(meta!.home);
+    // 点名开新场也不再动眼前的场：切过去是前端换连接的事
+    expect((self.state as { activeSession: string }).activeSession).toBe(
+      "s-old",
+    );
+  });
+
+  it("闲置归档（startFreshPreliminary）→ 旧场原地归档，指向换新预备栏，不开新屋", async () => {
+    const { db, self, call } = harness({
+      activeSession: "s-old",
+      messages: [userMsg("旧场里的一句话")],
+    });
+    db.sessionRows.set("s-old", { id: "s-old", title: "旧场" });
+
+    await call<Promise<void>>("startFreshPreliminary");
+    const active = (self.state as { activeSession: string }).activeSession;
+    expect(active).not.toBe("s-old");
+    expect(db.sessionRows.size).toBe(1); // 旧场还在目录里：归档不是删
+    expect((self.messages as UIMessage[]).length).toBe(0); // 眼前已收干净
+  });
+});
+
+describe("场屋：屋名定场", () => {
+  it("ensureActiveSession：固定场 → 指向永远是屋名里那个 id，不建行", () => {
+    const { db, self, call } = harness({ name: "default--s-fixed" });
+    const id = call<string>("ensureActiveSession");
+    expect(id).toBe("s-fixed");
+    expect((self.state as { activeSession: string }).activeSession).toBe(
+      "s-fixed",
+    );
+    expect(db.sessionRows.size).toBe(0); // 屋里没人开过口，没有行
+  });
+
+  it("ensureRealSession：场屋第一句话 → 当场立行转正，标题截第一句", () => {
+    const { db, call } = harness({
+      name: "default--s-fixed",
+      messages: [userMsg("这场从这个问题聊起来")],
+    });
+    const id = call<string>("ensureRealSession");
+    expect(id).toBe("s-fixed");
+    const row = db.sessionRows.get(id)!;
+    expect(row.title).toBe("这场从这个问题聊起来".slice(0, 18));
+    expect(row.named).toBe(0); // 名字留给模型
+  });
+
+  it("场屋里 createSession / switchSession 都定死在唯一的场上", async () => {
+    const { db, call } = harness({ name: "default--s-fixed" });
+    db.sessionRows.set("s-fixed", { id: "s-fixed", title: "这屋的场" });
+    // 点名也不行：开新场是目录屋（人屋）的事，场屋里没有「新对话」
+    expect(await call<unknown>("createSession", "想点个名")).toBeNull();
+    const meta = await call<{ id: string } | null>("switchSession", "s-other");
+    expect(meta?.id).toBe("s-fixed"); // 切来切去都是它自己
+  });
+
+  it("registerSessionIndex：目录屋收指路牌，指错门的当没听见", () => {
+    const { db, call } = harness({ name: "default" });
+    call<void>("registerSessionIndex", {
+      id: "s-abc",
+      title: "第一句话",
+      home: "default--s-abc",
+    });
+    expect(db.sessionRows.get("s-abc")?.home).toBe("default--s-abc");
+    // 指路牌必须指向本人名下的场屋：别家屋名的登记不收
+    call<void>("registerSessionIndex", {
+      id: "s-hack",
+      title: "x",
+      home: "guest-0123456789abcdef--s-hack",
+    });
+    expect(db.sessionRows.has("s-hack")).toBe(false);
   });
 });

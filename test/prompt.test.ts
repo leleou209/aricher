@@ -51,7 +51,8 @@ describe("toolGuide", () => {
 
   it("主人那间写着任务、提醒、翻旧账、赞踩的用法，且不再有盯梢/承诺/发信", () => {
     const owner = toolGuide(false);
-    for (const t of ["recall（", "task（", "remind（", "feedback（"]) {
+    // 索引行式：渐进式工具在说明里是「名字 —— 用途」一行一条
+    for (const t of ["recall ——", "task ——", "remind ——", "feedback ——"]) {
       expect(owner).toContain(t);
     }
     // 三样已随副本裁掉：守则里写着、工具箱里没有，等于教我答应做不到的事
@@ -77,12 +78,12 @@ describe("toolGuide", () => {
 
   it("笔记本和记忆的分工写在主人那间：他要原稿，不是我的转述", () => {
     const owner = toolGuide(false);
-    expect(owner).toContain("note（");
-    expect(owner).toContain("用 note 而不是 memory");
+    expect(owner).toContain("note —— 笔记本");
+    expect(owner).toContain("用 note 不是 memory");
     // 这条是「她看得到我在翻哪一篇」在提示词里的那一半：
     // 少了它，noteFocusBlock 注进去的那一段没人认领，她只会当背景读过去
     expect(owner).toContain("用户正在看的笔记");
-    expect(owner).toContain("说清我动了哪几处");
+    expect(owner).toContain("说清动了哪几处");
   });
 
   it("来客那间只写它真有的那几个", () => {

@@ -71,8 +71,10 @@ describe("state 字段的写入归属", () => {
     expect(PATCHABLE_KEYS).toContain("voice");
   });
 
-  it("guestName 只由后端维护：它由 memory 的 whoami 写入，前端改它等于冒别人的名", () => {
-    expect(RUNTIME_ONLY.guestName).toBeTruthy();
+  it("guestName/adminBio 可以被面板改：PATCH 通道只归管理员，来客冒名的路没有开", () => {
+    expect(PATCHABLE_KEYS).toContain("guestName");
+    expect(PATCHABLE_KEYS).toContain("adminBio");
+    expect(RUNTIME_ONLY.guestName).toBeUndefined();
   });
 });
 

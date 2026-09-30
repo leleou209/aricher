@@ -11,8 +11,8 @@
 // AI Gateway 只属于旧链：目录条目不带网关概念，baseUrl 里用户自己可以填网关地址。
 
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { openAIModelWithReasoning as withReasoningContent } from "./agent/reasoningBridge";
 import { mimoAnthropicBase } from "./mimo";
 import {
   toMaxOutput,
@@ -112,11 +112,15 @@ function buildModel(
 ): LanguageModel {
   if (format === "anthropic")
     return createAnthropic({ baseURL: baseUrl, apiKey })(modelId);
-  const openai = createOpenAI({ apiKey, baseURL: baseUrl });
-  // .chat 是 chat completions；默认调用在 v6 里是 responses 语义，必须显式选
-  return format === "openai-responses"
-    ? openai.responses(modelId)
-    : openai.chat(modelId);
+  // openai 两种格式的流都不认思维链（chat 的 reasoning_content、responses 的
+  // reasoning_text.delta 都被 schema strip）—— DeepSeek/GLM/Kimi 这类端点
+  // 的思考流靠这层桥找回来；anthropic 有原生 thinking 通道，不用包
+  return withReasoningContent({
+    apiKey,
+    baseURL: baseUrl,
+    format,
+    modelId,
+  }) as unknown as LanguageModel;
 }
 
 /**
@@ -167,7 +171,9 @@ export async function resolveModel(
         maxOutput: toMaxOutput(entry.maxOutput),
         format: provider.format,
         contextWindow:
-          entry.contextWindow > 0 ? entry.contextWindow : DEFAULT_CONTEXT_WINDOW,
+          entry.contextWindow > 0
+            ? entry.contextWindow
+            : DEFAULT_CONTEXT_WINDOW,
         maintModel,
       };
     }
@@ -181,7 +187,7 @@ export async function resolveModel(
   if (!model) return null;
   return {
     model,
-    maxOutput: 32768,
+    maxOutput: 131072,
     format: "anthropic",
     contextWindow: DEFAULT_CONTEXT_WINDOW,
     maintModel: maintenanceModel(env),
