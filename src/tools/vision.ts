@@ -123,19 +123,31 @@ export async function describeImage(
 
   const obj = await env.MEMORY_BUCKET.get(key);
   if (!obj) return { ok: false, error: "文件不存在：" + key };
-  const contentType = obj.httpMetadata?.contentType || "";
+  const rawType = obj.httpMetadata?.contentType || "";
   if (
-    !contentType.startsWith("image/") &&
+    !rawType.startsWith("image/") &&
     !/\.(png|jpe?g|webp|bmp|gif)$/i.test(key)
   ) {
     return {
       ok: false,
-      error: `不是图片文件（${contentType || "未知类型"}），无法做视觉分析。`,
+      error: `不是图片文件（${rawType || "未知类型"}），无法做视觉分析。`,
     };
   }
+  // 类型要归一：云盘对象可能带着 application/octet-stream 这类非图片类型，
+  // 原样拼进 data URL 会被端点判为不支持（和 loadImage 用同一套归一）
+  const contentType = OK_MIME.has(rawType)
+    ? rawType
+    : EXT_MIME[extOf(key)] || "image/jpeg";
+  // 上限说的是「原图字节数」，不是「base64 字符数」—— 拿它切字符串的话，
+  // 半张图会被当成完整的送到端点，模型可能拿着残图当真描述
+  if (obj.size > MAX_INLINE_IMAGE)
+    return {
+      ok: false,
+      error: `这张图有 ${mb(obj.size)}，超过能递到我眼前的上限（${mb(MAX_INLINE_IMAGE)}），原图我看不了。`,
+    };
 
   const b64 = toBase64(await obj.arrayBuffer()).replace(/\s/g, "");
-  const dataUrl = `data:${contentType || "image/jpeg"};base64,${b64.slice(0, MAX_INLINE_IMAGE)}`;
+  const dataUrl = `data:${contentType};base64,${b64}`;
 
   const errors: string[] = [];
   for (const model of MODELS) {

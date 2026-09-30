@@ -110,6 +110,11 @@ export function taskTools(ctx: ToolCtx) {
       }),
       execute: async (a) => {
         const skills = { ...ctx.state.skills };
+        // 技能名会被当成对象键：__proto__ / constructor / prototype 这几个名字
+        // 落在原型链上，存不进去也会回「已创建」，run 到 constructor 还会直接崩
+        const RESERVED = new Set(["__proto__", "constructor", "prototype"]);
+        if (a.name && RESERVED.has(a.name))
+          return `「${a.name}」是个保留名字，用不了，换一个。`;
 
         if (a.action === "list") {
           const names = Object.keys(skills);
@@ -126,7 +131,7 @@ export function taskTools(ctx: ToolCtx) {
 
         if (a.action === "save") {
           if (!a.steps?.length) return "save 需要提供至少一个步骤。";
-          const existed = !!skills[a.name];
+          const existed = Object.hasOwn(skills, a.name);
           skills[a.name] = a.steps;
           ctx.patchState({ skills });
           ctx.notify("技能已更新：" + a.name);
@@ -134,14 +139,16 @@ export function taskTools(ctx: ToolCtx) {
         }
 
         if (a.action === "delete") {
-          if (!skills[a.name]) return "技能不存在：" + a.name;
+          if (!Object.hasOwn(skills, a.name)) return "技能不存在：" + a.name;
           delete skills[a.name];
           ctx.patchState({ skills });
           ctx.notify("技能已删除：" + a.name);
           return "已删除技能：" + a.name;
         }
 
-        const steps = skills[a.name];
+        const steps = Object.hasOwn(skills, a.name)
+          ? skills[a.name]
+          : undefined;
         if (!steps) return `技能不存在：${a.name}（可用 skill list 查看）`;
         return (
           `📦 按技能「${a.name}」的步骤执行，请用你的真实工具逐步完成：\n` +

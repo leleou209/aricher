@@ -120,6 +120,10 @@ export function remindTools(ctx: ToolCtx) {
         const at = (a.at || "").trim();
         if (!what) return "set 需要提供 what：到点要提醒你什么。";
         if (!at) return "set 需要提供 at：什么时候提醒，绝对时间带时区。";
+        // 不带偏移的写法会被按 UTC 解释（Worker 的本地时区就是 UTC）：
+        // 北京人定「明天九点」写 09:00 会被存成 09:00Z，17 点才响，而回话照样说「定好了」
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(at))
+          return `at 得带上时区偏移，比如 2026-09-20T09:00:00+08:00 —— 只写「${at}」会被按 UTC 算，差 8 小时。`;
 
         try {
           const r = await ctx.scheduleReminder({

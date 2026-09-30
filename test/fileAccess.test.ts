@@ -4,6 +4,7 @@ import {
   canReadFile,
   fileResponseHeaders,
   roomKeyPrefix,
+  roomKeyPrefixes,
   safeFolder,
   safeKeyPath,
   scopedKey,
@@ -29,6 +30,29 @@ describe("房间文件划界", () => {
     expect(canReadFile("f/guest-ab12/draw-1-x.png", "user", "guest-ab12")).toBe(
       true,
     );
+  });
+
+  it("来客也读得到自己名下场屋的产物：key 前缀是「人屋--场id」", () => {
+    // 在场屋里画出来的图，key 用的是场屋名，而 REST 那侧只能算到人屋 ——
+    // 不认这一层，来客自己场屋里生成的图，他自己打开的是一张破图
+    expect(
+      canReadFile(
+        "f/guest-ab12--s-9/会话/s-9/draw-1.png",
+        "user",
+        "guest-ab12",
+      ),
+    ).toBe(true);
+    // 反过来也放行：场屋里的工具拿 ctx.room（场屋名）去读人屋本尊的产物，是同一个人的
+    expect(
+      canReadFile("f/guest-ab12/draw-1.png", "user", "guest-ab12--s-9"),
+    ).toBe(true);
+    // 别人名下的场屋一概不行；相似人屋名也不误撞
+    expect(
+      canReadFile("f/guest-cccc--s-9/draw-1.png", "user", "guest-ab12"),
+    ).toBe(false);
+    expect(
+      canReadFile("f/guest-ab123--s-9/draw-1.png", "user", "guest-ab12"),
+    ).toBe(false);
   });
 
   it("别人的房间、老的无前缀 key、_admin 混进来的 role，都拒", () => {
@@ -91,10 +115,10 @@ describe("scopedKey 生成", () => {
 
 describe("sessionKey 会话归档", () => {
   it("有会话就落进 会话/<id>/ 文件夹，房间划界照旧", () => {
-    expect(
-      sessionKey("default", "s-123", "draw", "png"),
-    ).toMatch(
-      new RegExp(`^f\\/default\\/${SESSION_FOLDER}\\/s-123\\/draw-\\d{13}-[0-9a-f]{8}\\.png$`),
+    expect(sessionKey("default", "s-123", "draw", "png")).toMatch(
+      new RegExp(
+        `^f\\/default\\/${SESSION_FOLDER}\\/s-123\\/draw-\\d{13}-[0-9a-f]{8}\\.png$`,
+      ),
     );
     // 来客房的产物也归档在自己那间之下，读取划界（canReadFile）不用改
     const k = sessionKey("guest-ab12", "s-9", "diagram", "mmd");
@@ -176,6 +200,17 @@ describe("assertInScope 范围划界", () => {
   it("管理员 scope 为空串：整只桶都放行", () => {
     expect(() => assertInScope("f/guest-cccc/x.png", "")).not.toThrow();
     expect(() => assertInScope("旧文件.png", "")).not.toThrow();
+  });
+
+  it("来客的范围是人屋 + 他名下的场屋：场屋产物删得掉，别人的仍然不行", () => {
+    const scope = roomKeyPrefixes("guest-ab12");
+    expect(scope).toEqual(["f/guest-ab12/", "f/guest-ab12--"]);
+    expect(() =>
+      assertInScope("f/guest-ab12--s-9/会话/s-9/draw.png", scope),
+    ).not.toThrow();
+    expect(() => assertInScope("f/guest-cccc/x.png", scope)).toThrow();
+    expect(() => assertInScope("f/guest-ab123--s-9/x.png", scope)).toThrow();
+    expect(() => assertInScope("f/public/poster.png", scope)).toThrow();
   });
 });
 

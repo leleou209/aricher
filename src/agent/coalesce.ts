@@ -203,6 +203,14 @@ export function coalesceStream(
         disarm();
         out = null;
       },
+      cancel() {
+        // 流被取消（客户端断开、点停止、切场重连）时不会走 flush：已武装的
+        // 定时器到点仍会 flush，而 controller 已经关了 —— enqueue 会直接抛。
+        // 在这里停表、摘掉出口，emitLine 里的 `out?.` 就兜住了
+        disarm();
+        pending = null;
+        out = null;
+      },
     }),
   );
 

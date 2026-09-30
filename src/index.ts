@@ -37,6 +37,7 @@ import {
   canReadFile,
   fileResponseHeaders,
   roomKeyPrefix,
+  roomKeyPrefixes,
   safeFolder,
   safeKeyPath,
   scopedKey,
@@ -159,7 +160,7 @@ function agentNameInPath(pathname: string): string | null {
 
 const FAIL_LIMIT = 5;
 const LOCKOUT_MS = 60_000;
-const attempts = new Map<string, { n: number; until: number }>();
+const attempts = new Map<string, { n: number; until: number; at: number }>();
 
 function clientKey(req: Request): string {
   return req.headers.get("CF-Connecting-IP") || "unknown";
@@ -172,8 +173,16 @@ function isLockedOut(key: string): number {
 }
 
 function noteFailure(key: string): void {
-  const rec = attempts.get(key) || { n: 0, until: 0 };
+  const now = Date.now();
+  // 这张表是 isolate 内存态，只增不减的话，扫一批不同来源 IP 就能把它撑大。
+  // 过了阈值顺手收掉「十分钟没再动过、也没在锁定期里」的旧条目 ——
+  // 仍在锁定中的那几个（until 未到）原地保留，拦人的效果不受影响
+  if (attempts.size > 500)
+    for (const [k, v] of attempts)
+      if (v.until <= now && now - v.at > LOCKOUT_MS * 10) attempts.delete(k);
+  const rec = attempts.get(key) || { n: 0, until: 0, at: 0 };
   rec.n += 1;
+  rec.at = now;
   if (rec.n >= FAIL_LIMIT) {
     rec.until = Date.now() + LOCKOUT_MS;
     rec.n = 0;
@@ -395,13 +404,15 @@ async function uploadKeyFor(
  * 管理员整只桶（scope=""，key 从桶根算）；来客凭 permFiles 权益
  * 限自己房间前缀。没票、没卡、没权益都是 null —— 调用方回 403。
  */
-async function fileScopeFor(req: Request, env: Env): Promise<string | null> {
+async function fileScopeFor(req: Request, env: Env): Promise<string[] | null> {
   const info = await verifyTokenInfo(env, authToken(req));
   if (!info) return null;
-  if (info.role === "admin") return "";
+  if (info.role === "admin") return [""];
   if (!(await cardAllows(req, env, "permFiles"))) return null;
   const room = await agentNameForToken(env, "user", authToken(req));
-  return roomKeyPrefix(room);
+  // 人屋本尊 + 他名下的场屋：产物按「当时那间屋」的前缀存，只放人屋前缀的话，
+  // 来客在自己场屋里生成的文件列得出来却删不掉
+  return roomKeyPrefixes(room);
 }
 
 /**
@@ -573,11 +584,16 @@ async function handleList(req: Request, env: Env): Promise<Response> {
       });
     }
     const room = await agentNameFor(req, env, role);
+    // 自己那间的：人屋本尊 + 他名下各场屋的产物（场屋 key 前缀是「人屋--场id」）
     const [own, pub] = await Promise.all([
-      bucket.list({ prefix: roomKeyPrefix(room), limit: 500 }),
+      Promise.all(
+        roomKeyPrefixes(room).map((prefix) =>
+          bucket.list({ prefix, limit: 500 }),
+        ),
+      ),
       bucket.list({ prefix: PUBLIC_PREFIX, limit: 500 }),
     ]);
-    const objects = [...own.objects, ...pub.objects];
+    const objects = [...own.flatMap((r) => r.objects), ...pub.objects];
     return Response.json({
       files: objects.map(toFileRow),
       count: objects.length,

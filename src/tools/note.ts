@@ -201,10 +201,16 @@ export function noteTools(ctx: ToolCtx) {
           if (a.action === "append") {
             const text = (a.text || "").trim();
             if (!text) return "append 需要 text：要追加的那一段。";
-            const n = ctx.saveNote({
-              id,
-              body: old.body ? `${old.body}\n\n${text}` : text,
-            });
+            const merged = old.body ? `${old.body}\n\n${text}` : text;
+            const n = ctx.saveNote({ id, body: merged });
+            // 触顶后写入层会静默截断（noteStore 按 NOTE_BODY_MAX 切）——
+            // 不比对的话，回话会说「加好了」而实际掉了半段，模型据此告诉用户已补进去
+            if (n.body.length < merged.length)
+              return (
+                `《${n.title}》已经到单篇上限（${NOTE_BODY_MAX} 字）了，这一回只写进去 ` +
+                `${Math.max(0, n.body.length - old.body.length)} 字，后面那段被截掉了。` +
+                "要接着写，得先精简这一篇，或者另起一篇。"
+              );
             return `在《${n.title}》末尾加了一段，这一篇现在 ${n.body.length} 字。他那边的正文会跟着更新。`;
           }
 

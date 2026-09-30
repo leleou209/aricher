@@ -290,6 +290,12 @@ export async function cardRoom(
 ): Promise<string | null> {
   const hit = cardRoomCache.get(cardId);
   if (hit && Date.now() - hit.at < CARD_ROOM_TTL_MS) return hit.room;
+  // 与登录限速同一类问题：模块级 Map 只增不减。过期条目顺手收掉
+  if (cardRoomCache.size > 200) {
+    const now = Date.now();
+    for (const [k, v] of cardRoomCache)
+      if (now - v.at >= CARD_ROOM_TTL_MS) cardRoomCache.delete(k);
+  }
   try {
     const stub = env.COWORK_AGENT.get(
       env.COWORK_AGENT.idFromName(OWNER_AGENT),

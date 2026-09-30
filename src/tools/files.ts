@@ -187,6 +187,9 @@ export function fileTools(ctx: ToolCtx) {
         if (action === "delete") {
           if (!key) return "delete 需要提供 key。";
           if (!inScope(key)) return "文件不存在：" + key;
+          // R2 删一个不存在的 key 也算成功：不先看一眼，就会回「已删除」一个
+          // 本来就没有的东西 —— 同楼的 move / read 都先验存在，这条照做
+          if (!(await bucket.head(key))) return "没有这个文件：" + key;
           if (!confirm)
             return `删除是不可逆操作。确认要删除「${key}」的话，请带 confirm=true 再调用一次。`;
           await bucket.delete(key);

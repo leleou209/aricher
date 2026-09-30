@@ -13,6 +13,22 @@ export function roomKeyPrefix(room: string): string {
 }
 
 /**
+ * 这间屋子「算自己人」的全部前缀：人屋本尊 + 它名下的各个场屋。
+ *
+ * 产物 key 用的是「当时那间屋」的名字：在场屋里画出来的图，前缀是
+ * `f/人屋--场id/`；而 REST 那侧算房间时只会算到人屋 —— 不认这一层，
+ * 来客在自己场屋里画出来的图，他自己都打不开（管理员不受影响，全库可见）。
+ * 第二个前缀故意不带尾斜杠：`f/人屋--` 才匹配得上 `f/人屋--场id/`，
+ * 而别人的屋名不会以它开头。
+ */
+export function roomKeyPrefixes(room: string): string[] {
+  const i = room.indexOf("--");
+  const owner = i === -1 ? room : room.slice(0, i);
+  // 自己那间 + 人屋本尊 + 人屋名下的场屋一族（三者在人屋本尊那一档会重合，去重）
+  return [...new Set([`f/${room}/`, `f/${owner}/`, `f/${owner}--`])];
+}
+
+/**
  * 公开空间：key 在这个前缀下的文件，登录进来的人谁都读得到。
  * 不是一间「屋子」——没有门票指向它，它只是把「愿意给所有人看的」
  * 和「只属于某间屋的」在 key 上分开。permPublic 权益管的是谁能往里放。
@@ -105,8 +121,11 @@ export function safeKeyPath(input: string): string {
  * 云盘写操作的范围检查：来客的 key 必须落在自己房间前缀之下，
  * 管理员 scope 为空串（整只桶）。越界就抛 —— 调用方把话转给界面。
  */
-export function assertInScope(key: string, scope: string): void {
-  if (scope && !key.startsWith(scope))
+export function assertInScope(key: string, scope: string | string[]): void {
+  const list = Array.isArray(scope) ? scope : [scope];
+  // 空串 = 管理员（整只桶）；多前缀 = 来客（人屋本尊 + 他名下的场屋）
+  if (list.includes("")) return;
+  if (!list.some((s) => key.startsWith(s)))
     throw new Error("这个操作超出了你那间的文件范围");
 }
 
@@ -118,7 +137,7 @@ export function canReadFile(
 ): boolean {
   if (role === "admin") return true;
   if (key.startsWith(PUBLIC_PREFIX)) return true;
-  return key.startsWith(roomKeyPrefix(room));
+  return roomKeyPrefixes(room).some((p) => key.startsWith(p));
 }
 
 /**
