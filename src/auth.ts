@@ -128,7 +128,7 @@ export async function issueToken(
 export async function verifyTokenInfo(
   env: Env,
   token: string | null | undefined,
-): Promise<{ role: Role; type?: string; card?: string } | null> {
+): Promise<{ role: Role; type?: string; card?: string; exp: number } | null> {
   if (!token) return null;
   const parts = token.split(".");
   if (parts.length < 3 || parts.length > 5) return null;
@@ -145,7 +145,7 @@ export async function verifyTokenInfo(
       third,
       await hmac(key, `gate.${role}.${exp}`),
     ))
-      ? { role }
+      ? { role, exp }
       : null;
   }
   const type = third;
@@ -155,7 +155,7 @@ export async function verifyTokenInfo(
       fourth,
       await hmac(key, `gate.${role}.${type}.${exp}`),
     ))
-      ? { role, type }
+      ? { role, type, exp }
       : null;
   }
   const card = fourth;
@@ -165,7 +165,7 @@ export async function verifyTokenInfo(
     sig,
     await hmac(key, `gate.${role}.${type}.${card}.${exp}`),
   ))
-    ? { role, type, card }
+    ? { role, type, card, exp }
     : null;
 }
 
@@ -225,6 +225,30 @@ export function authToken(req: Request): string | null {
 
 export async function authRole(req: Request, env: Env): Promise<Role | null> {
   return verifyToken(env, authToken(req));
+}
+
+/**
+ * 滑动续期：票的剩余寿命不足半程就该换张新的。
+ * 活跃的票永远被续着（持续制），30 天完全不露面的票自然死亡——
+ * 掉线的从来只有真没来的人。半程而不是临期才续：
+ * 一张票一辈子最多被续十几次，而不是天天往响应里塞 Set-Cookie。
+ */
+export const SESSION_RENEW_LEFT_SEC = SESSION_TTL_SEC / 2;
+
+/** 验过的票剩余寿命不足半程 → 值得顺手续一张。 */
+export function tokenNeedsRenewal(
+  info: { exp: number },
+  now = Date.now(),
+): boolean {
+  return info.exp - now < SESSION_RENEW_LEFT_SEC * 1000;
+}
+
+/** 按旧票的权益重签一张满寿命的新票：role/type/card 原样，exp 重置。 */
+export function renewToken(
+  env: Env,
+  info: { role: Role; type?: string; card?: string },
+): Promise<string> {
+  return issueToken(env, info.role, SESSION_TTL_SEC, info.type, info.card);
 }
 
 export async function isAuthed(req: Request, env: Env): Promise<boolean> {

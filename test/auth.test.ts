@@ -17,8 +17,12 @@ import {
   cookieSecure,
   gatePassword,
   issueToken,
+  renewToken,
   roleForPassword,
+  SESSION_RENEW_LEFT_SEC,
+  SESSION_TTL_SEC,
   sessionCookie,
+  tokenNeedsRenewal,
   verifyToken,
   verifyTokenInfo,
   type Role,
@@ -151,6 +155,7 @@ describe("签名密钥不落门禁码", () => {
       role: "user",
       type: "common",
       card: "abcd1234",
+      exp: expect.any(Number),
     });
     const forged = await signWithCard(
       "menkou",
@@ -165,7 +170,10 @@ describe("签名密钥不落门禁码", () => {
   it("只配 ADMIN_PASSWORD：票用口令签、用口令验，照常工作", async () => {
     const e = env({ ADMIN_PASSWORD: "guanmen" });
     const token = await issueToken(e, "admin");
-    expect(await verifyTokenInfo(e, token)).toEqual({ role: "admin" });
+    expect(await verifyTokenInfo(e, token)).toEqual({
+      role: "admin",
+      exp: expect.any(Number),
+    });
   });
 });
 
@@ -178,6 +186,7 @@ describe("token v2：带档位的来客票", () => {
     expect(await verifyTokenInfo(e, token)).toEqual({
       role: "user",
       type: "vip",
+      exp: expect.any(Number),
     });
   });
 
@@ -185,14 +194,20 @@ describe("token v2：带档位的来客票", () => {
     const e = env({ SESSION_SECRET: "s3cr3t" });
     const token = await issueToken(e, "admin", undefined, "vip");
     expect(token.split(".")).toHaveLength(3);
-    expect(await verifyTokenInfo(e, token)).toEqual({ role: "admin" });
+    expect(await verifyTokenInfo(e, token)).toEqual({
+      role: "admin",
+      exp: expect.any(Number),
+    });
   });
 
   it("v1 老票（三段）照样验得过，type 视为没有", async () => {
     const e = env({ SESSION_SECRET: "s3cr3t" });
     const old = await signWith("s3cr3t", Date.now() + 60_000, "user");
     expect(old.split(".")).toHaveLength(3);
-    expect(await verifyTokenInfo(e, old)).toEqual({ role: "user" });
+    expect(await verifyTokenInfo(e, old)).toEqual({
+      role: "user",
+      exp: expect.any(Number),
+    });
   });
 
   it("档位对不上签名：整张票作废 —— 档位是签进去的，改不动", async () => {
@@ -234,6 +249,7 @@ describe("token v3：长期使用者的身份卡票", () => {
       role: "user",
       type: "vip",
       card: "abcd1234",
+      exp: expect.any(Number),
     });
   });
 
@@ -241,7 +257,10 @@ describe("token v3：长期使用者的身份卡票", () => {
     const e = env({ SESSION_SECRET: "s3cr3t" });
     const token = await issueToken(e, "admin", undefined, "vip", "abcd1234");
     expect(token.split(".")).toHaveLength(3);
-    expect(await verifyTokenInfo(e, token)).toEqual({ role: "admin" });
+    expect(await verifyTokenInfo(e, token)).toEqual({
+      role: "admin",
+      exp: expect.any(Number),
+    });
   });
 
   it("v2 四段老票照样验得过：card 视为没有", async () => {
@@ -251,6 +270,7 @@ describe("token v3：长期使用者的身份卡票", () => {
     expect(await verifyTokenInfo(e, old)).toEqual({
       role: "user",
       type: "vip",
+      exp: expect.any(Number),
     });
   });
 
@@ -390,5 +410,64 @@ describe("cookie 上的 Secure 跟着这次请求走", () => {
     expect(cookie.split(";").length).toBeGreaterThan(1);
     expect(cookie).not.toContain("a.b=c d");
     expect(cookie).toContain(encodeURIComponent("a.b=c d"));
+  });
+});
+
+/**
+ * 滑动续期：活跃的票永远被续着（持续制），30 天完全不露面的票自然死亡。
+ * 判定是「剩余寿命不足半程」—— 一张票最多每 15 天被续一次，不是天天塞 Set-Cookie。
+ */
+describe("滑动续期", () => {
+  const DAY_SEC = 24 * 3600;
+
+  it("新签的票满寿命，不需要续", async () => {
+    const e = env({ SESSION_SECRET: "s3cr3t" });
+    const token = await issueToken(e, "user", SESSION_TTL_SEC, "type_a");
+    const info = await verifyTokenInfo(e, token);
+    expect(info).not.toBeNull();
+    expect(tokenNeedsRenewal(info!)).toBe(false);
+  });
+
+  it("剩余寿命掉进半程 → 该续了（活跃的票从此被一直续着）", async () => {
+    const e = env({ SESSION_SECRET: "s3cr3t" });
+    // 手签一张只剩 10 天寿命的票：10 天 < 15 天半程
+    const token = await issueToken(e, "user", 10 * DAY_SEC, "type_a");
+    const info = await verifyTokenInfo(e, token);
+    expect(info).not.toBeNull();
+    expect(tokenNeedsRenewal(info!)).toBe(true);
+  });
+
+  it("正好卡在半程上不算该续：判定是「不足半程」，不是「不足等于」", () => {
+    expect(
+      tokenNeedsRenewal({
+        exp: Date.now() + SESSION_RENEW_LEFT_SEC * 1000,
+      }),
+    ).toBe(false);
+  });
+
+  it("续出的新票满寿命、权益原样带过去", async () => {
+    const e = env({ SESSION_SECRET: "s3cr3t" });
+    const old = await issueToken(e, "user", 10 * DAY_SEC, "type_a", "card1234");
+    const info = (await verifyTokenInfo(e, old))!;
+    const fresh = await renewToken(e, info);
+    const freshInfo = await verifyTokenInfo(e, fresh);
+    expect(freshInfo).toMatchObject({
+      role: "user",
+      type: "type_a",
+      card: "card1234",
+    });
+    // 新票的寿命回到了满程（允许签发过程耗掉一点时间）
+    expect(freshInfo!.exp - Date.now()).toBeGreaterThan(
+      SESSION_TTL_SEC * 1000 - 60_000,
+    );
+    expect(tokenNeedsRenewal(freshInfo!)).toBe(false);
+  });
+
+  it("admin 票同样能续：只换寿命不换角色", async () => {
+    const e = env({ SESSION_SECRET: "s3cr3t" });
+    const old = await issueToken(e, "admin", 5 * DAY_SEC);
+    const info = (await verifyTokenInfo(e, old))!;
+    const freshInfo = await verifyTokenInfo(e, await renewToken(e, info));
+    expect(freshInfo).toMatchObject({ role: "admin" });
   });
 });

@@ -13,6 +13,8 @@ import {
   forbidden,
   gatePassword,
   issueToken,
+  renewToken,
+  tokenNeedsRenewal,
   OWNER_AGENT,
   roleForPassword,
   sessionCookie,
@@ -539,6 +541,26 @@ async function handleDelete(req: Request, env: Env): Promise<Response> {
 
 function agentStub(env: Env, name = OWNER_AGENT) {
   return env.COWORK_AGENT.get(env.COWORK_AGENT.idFromName(name));
+}
+
+/**
+ * 滑动续期：这次请求带的票剩余寿命不足半程，就在响应上顺手挂一张满寿命的新票。
+ * 验签不过的票到不了能续的地方（伪造票借不了道）；权益核验照旧走各路由的现查
+ * —— 续期只换寿命，不动任何权益面。不是每请求都发：半程闸让一张票
+ * 最多每 15 天被续一次。WebSocket 握手不走这里，前端页面加载与面板操作的
+ * REST 流量足以撑住活跃用户的续期节奏。
+ */
+async function renewIfNeeded(
+  req: Request,
+  env: Env,
+  res: Response,
+): Promise<Response> {
+  const info = await verifyTokenInfo(env, authToken(req));
+  if (!info || !tokenNeedsRenewal(info)) return res;
+  const fresh = await renewToken(env, info);
+  const headers = new Headers(res.headers);
+  headers.append("Set-Cookie", sessionCookie(fresh, cookieSecure(req)));
+  return new Response(res.body, { status: res.status, headers });
 }
 
 async function handleApi(
@@ -1843,7 +1865,12 @@ export default {
       const role = await authRole(req, env);
       if (!role) return unauthorized();
       try {
-        return await handleApi(req, env, url, role);
+        // 出口统一包一层滑动续期：票进了半程就在这个响应上换新（见 renewIfNeeded）
+        return await renewIfNeeded(
+          req,
+          env,
+          await handleApi(req, env, url, role),
+        );
       } catch (e) {
         return fail(e);
       }
