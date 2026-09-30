@@ -460,6 +460,11 @@ export interface MemQuery {
    * 过滤发生在 SQL 里，不靠提示词自觉 —— 数据层关上的门，提示词开不了。
    */
   guestOwnerKey?: string;
+  /**
+   * 轮内检索缓存：同轮同参的搜索直接复用，不再打一遍 Vectorize（按维度计费）。
+   * 生命周期归调用方管 —— 一轮一清，写入记忆的工具有责任当场清掉。
+   */
+  cache?: Map<string, MemEntry[]>;
 }
 
 /**
@@ -1294,6 +1299,29 @@ export function scoreMemory(
  * 命中加分自然落空 —— 这是有意的，被推翻的话不该再被我检索到。
  */
 export async function searchMemories(
+  sql: SqlTag,
+  env: Env,
+  query: string,
+  limit = 5,
+  opts: MemQuery = {},
+): Promise<MemEntry[]> {
+  // 缓存键带上分支标志：来客受限读 / 公开读 / 带作废是三条不同的 SQL，
+  // 同一个词在不同分支里的答案不同，不能混
+  const key = JSON.stringify([
+    query,
+    limit,
+    opts.guestOwnerKey ?? "",
+    opts.onlyPublic ?? false,
+    opts.includeSuperseded ?? false,
+  ]);
+  if (opts.cache?.has(key)) return opts.cache.get(key)!;
+  const hits = await searchMemoriesFresh(sql, env, query, limit, opts);
+  opts.cache?.set(key, hits);
+  return hits;
+}
+
+/** searchMemories 的本体（无缓存）。 */
+async function searchMemoriesFresh(
   sql: SqlTag,
   env: Env,
   query: string,

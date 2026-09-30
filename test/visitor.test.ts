@@ -15,11 +15,30 @@
 import { describe, it, expect } from "vitest";
 import {
   logVisitorEvent,
+  logVisitorEventBatch,
   listVisitorEvents,
   registerVisitorRoom,
   listVisitorRooms,
+  VISITOR_BATCH_KIND,
+  type VisitorEvent,
 } from "../src/agent/visitor";
 import type { SqlTag } from "../src/agent/state";
+
+/** 假库的本来面目（测试里偶尔要绕过封装直接塞脏数据） */
+type RawSql = (s: TemplateStringsArray, ...v: unknown[]) => unknown[];
+
+/**
+ * 造一笔 ts 明确的事件。块里的各笔得跟散行共用同一只假钟 ——
+ * buildVisitorEvent 取的是真时钟，跟假库盖写的行 ts 不可比，排序会乱套。
+ */
+const ev = (detail: string, ts: string, kind = "panel"): VisitorEvent => ({
+  id: "e-" + detail,
+  room: "guest-aabb",
+  nickname: "小张",
+  kind,
+  detail,
+  ts,
+});
 
 /** 手动时钟：测试里拨一下，假库写入的时间戳就跟着走（visitor.ts 自己取真时钟，假库盖写）。 */
 function fakeDb(clock: { now: string }) {
@@ -90,7 +109,7 @@ function fakeDb(clock: { now: string }) {
     throw new Error("假库不认得这条语句：" + sql);
   }) as unknown as SqlTag;
 
-  return { db };
+  return { db, events };
 }
 
 describe("visitor_events", () => {
@@ -179,5 +198,98 @@ describe("visitor_events", () => {
       "guest-ccdd",
       "guest-aabb",
     ]);
+  });
+});
+
+/**
+ * 块状存储：一轮的几笔收成一行落库，翻账时展开如旧。
+ * 行写入是 CF 计费的最矮墙 —— 块是给账本减负的，不是给账本改样的：
+ * 翻出来必须还是一条条看得懂的账，新旧混排、次序、截断都跟散行时代一个样。
+ */
+describe("visitor_events 块状存储", () => {
+  it("整块落一行，翻出来展开成一条条 —— 次序内容与散行无异", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db, events } = fakeDb(clock);
+    logVisitorEventBatch(db, [
+      ev("你好", "2026-01-01T00:00:01.000Z", "message"),
+      ev("在吗", "2026-01-01T00:00:02.000Z"),
+      ev("帮我看看", "2026-01-01T00:00:03.000Z"),
+    ]);
+
+    // 核心断言：三笔账在表里就是一行 —— 行数才是这道优化的账
+    expect(events).toHaveLength(1);
+    const list = listVisitorEvents(db, "guest-aabb", 500);
+    // 新的在前 —— 跟散行时代同一个翻账方向
+    expect(list.map((e) => e.detail)).toEqual(["帮我看看", "在吗", "你好"]);
+    expect(list.every((e) => e.nickname === "小张")).toBe(true);
+  });
+
+  it("同一毫秒的两笔不打架：块内原序就是发生序，翻出来不许翻脸", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db } = fakeDb(clock);
+    const same = "2026-01-01T00:00:01.000Z";
+    logVisitorEventBatch(db, [ev("先发生", same), ev("后发生", same)]);
+
+    expect(
+      listVisitorEvents(db, "guest-aabb", 500).map((e) => e.detail),
+    ).toEqual(["先发生", "后发生"]);
+  });
+
+  it("块与散行混排：按各笔自己的时间排序，看不出存储方式", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db } = fakeDb(clock);
+    // 先一块（00:00:01、00:00:02 两笔）
+    logVisitorEventBatch(db, [
+      ev("块里前一笔", "2026-01-01T00:00:01.000Z"),
+      ev("块里后一笔", "2026-01-01T00:00:02.000Z"),
+    ]);
+    // 再来一笔更晚的散行
+    clock.now = "2026-01-01T00:00:05.000Z";
+    logVisitorEvent(db, "guest-aabb", "", "message", "散行最晚");
+
+    const list = listVisitorEvents(db, "guest-aabb", 500);
+    expect(list.map((e) => e.detail)).toEqual([
+      "散行最晚",
+      "块里后一笔",
+      "块里前一笔",
+    ]);
+  });
+
+  it("坏块（解析不了的）整块跳过，别的账照翻", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db } = fakeDb(clock);
+    logVisitorEvent(db, "guest-aabb", "", "message", "好的那一笔");
+    // 直接塞一条坏块进表（模拟历史脏数据）
+    (db as unknown as RawSql)`INSERT INTO visitor_events (id, room, nickname, kind, detail, ts)
+      VALUES (${"bad"}, ${"guest-aabb"}, ${""}, ${VISITOR_BATCH_KIND}, ${"不是JSON"}, ${clock.now})`;
+
+    const list = listVisitorEvents(db, "guest-aabb", 500);
+    expect(list.map((e) => e.detail)).toEqual(["好的那一笔"]);
+  });
+
+  it("limit 展开后仍生效：块里十笔，只翻五笔", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db } = fakeDb(clock);
+    logVisitorEventBatch(
+      db,
+      Array.from({ length: 10 }, (_, i) =>
+        ev(
+          `第${i}笔`,
+          new Date(Date.parse(clock.now) + (i + 1) * 1000).toISOString(),
+        ),
+      ),
+    );
+    const list = listVisitorEvents(db, "guest-aabb", 5);
+    expect(list).toHaveLength(5);
+    // 新的在前：截掉的是最老的那几笔
+    expect(list[0].detail).toBe("第9笔");
+    expect(list[4].detail).toBe("第5笔");
+  });
+
+  it("空块不落库 —— 白占一行的事不做", () => {
+    const clock = { now: "2026-01-01T00:00:00.000Z" };
+    const { db } = fakeDb(clock);
+    logVisitorEventBatch(db, []);
+    expect(listVisitorEvents(db, "guest-aabb", 500)).toHaveLength(0);
   });
 });

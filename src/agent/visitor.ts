@@ -64,16 +64,20 @@ export function ensureVisitorSchema(sql: SqlTag): void {
      )`;
 }
 
-/** 记一笔。nickname 取记录那一刻的称呼，事后翻账才知道「这是谁干的事」。 */
-export function logVisitorEvent(
-  sql: SqlTag,
+/**
+ * 块行的 kind。块 = 一行 JSON 数组装着一串事件 —— 行写入是 CF 计费的最矮墙，
+ * 同一轮里的几笔留痕收成一行，行数直接省一个数量级。读取时展开，新旧混排。
+ */
+export const VISITOR_BATCH_KIND = "batch";
+
+/** 构造一笔（不落库）。nickname 取记录那一刻的称呼，事后翻账才知道「这是谁干的事」。 */
+export function buildVisitorEvent(
   room: string,
   nickname: string,
   kind: string,
   detail = "",
 ): VisitorEvent {
-  ensureVisitorSchema(sql);
-  const row: VisitorEvent = {
+  return {
     id: crypto.randomUUID(),
     room,
     nickname: nickname.slice(0, 20),
@@ -81,28 +85,82 @@ export function logVisitorEvent(
     detail: detail.slice(0, 300),
     ts: new Date().toISOString(),
   };
+}
+
+/** 落一笔散行。轮外的单笔留痕走这里 —— 进门、面板这些地方没有「轮尾」替它收口。 */
+export function logVisitorEventRow(sql: SqlTag, row: VisitorEvent): void {
+  ensureVisitorSchema(sql);
   sql`INSERT INTO visitor_events (id, room, nickname, kind, detail, ts)
       VALUES (${row.id}, ${row.room}, ${row.nickname}, ${row.kind}, ${row.detail}, ${row.ts})`;
+}
+
+/** 记一笔。 */
+export function logVisitorEvent(
+  sql: SqlTag,
+  room: string,
+  nickname: string,
+  kind: string,
+  detail = "",
+): VisitorEvent {
+  const row = buildVisitorEvent(room, nickname, kind, detail);
+  logVisitorEventRow(sql, row);
   return row;
 }
 
-/** 一个房间的留痕，新的在前。 */
+/**
+ * 把一批事件收成一行落库。ts 取块内最新那笔 —— 块在时间轴上停在它最后一笔的位置。
+ * 读侧见 listVisitorEvents：块行展开、新旧重排，翻账的人看不出这笔账是怎么存的。
+ */
+export function logVisitorEventBatch(
+  sql: SqlTag,
+  events: VisitorEvent[],
+): void {
+  if (!events.length) return;
+  ensureVisitorSchema(sql);
+  // 空昵称也得走占位符 —— 写成字面量 '' 会让后面的参数整体错一位
+  sql`INSERT INTO visitor_events (id, room, nickname, kind, detail, ts)
+      VALUES (${crypto.randomUUID()}, ${events[0].room}, ${""}, ${VISITOR_BATCH_KIND}, ${JSON.stringify(events)}, ${events[events.length - 1].ts})`;
+}
+
+/**
+ * 一个房间的留痕，新的在前。
+ *
+ * 块行在这里展开 —— 表里怎么存是存储的事，翻出来永远是一条条看得懂的账。
+ * SQL 层的 LIMIT 数的是行数（块算一行），展开后按时间重排再截到 limit 条。
+ * 坏块（解析不了）整块跳过：账本上不摆一张废纸。
+ */
 export function listVisitorEvents(
   sql: SqlTag,
   room: string,
   limit = 500,
 ): VisitorEvent[] {
   ensureVisitorSchema(sql);
-  return sql<EventRow>`
+  const rows = sql<EventRow>`
     SELECT id, room, nickname, kind, detail, ts FROM visitor_events
-    WHERE room = ${room} ORDER BY ts DESC LIMIT ${limit}`.map((r) => ({
-    id: r.id,
-    room: r.room,
-    nickname: r.nickname,
-    kind: r.kind,
-    detail: r.detail,
-    ts: r.ts,
-  }));
+    WHERE room = ${room} ORDER BY ts DESC LIMIT ${limit}`;
+  const events: VisitorEvent[] = [];
+  for (const r of rows) {
+    if (r.kind === VISITOR_BATCH_KIND) {
+      try {
+        const batch = JSON.parse(r.detail) as VisitorEvent[];
+        if (Array.isArray(batch)) events.push(...batch);
+      } catch {
+        // 坏块跳过 —— 少看一笔，好过整个翻账炸掉
+      }
+      continue;
+    }
+    events.push({
+      id: r.id,
+      room: r.room,
+      nickname: r.nickname,
+      kind: r.kind,
+      detail: r.detail,
+      ts: r.ts,
+    });
+  }
+  return events
+    .sort((a, b) => (a.ts < b.ts ? 1 : b.ts < a.ts ? -1 : 0))
+    .slice(0, limit);
 }
 
 /** 来客名册：报过新称呼就更新，每次报到顺手刷新 last_seen。 */

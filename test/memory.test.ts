@@ -435,6 +435,81 @@ describe("textOverlap（措辞像不像）", () => {
   });
 });
 
+describe("searchMemories 的轮内缓存", () => {
+  const today = "2026-01-01";
+  /** 迷你假库：一条命中行，数着检索真的打了几次库 */
+  function countingSql() {
+    let n = 0;
+    const tag = ((strings: TemplateStringsArray) => {
+      const q = strings.join("?").trim(); // 模板串开头常带换行，先修掉再认
+      if (!q.startsWith("SELECT")) return []; // UPDATE（touchWeights 之类）不数
+      n += 1;
+      return [
+        {
+          id: "m1",
+          date: today,
+          type: "fact",
+          tags: "fact",
+          weight: 0.5,
+          shelf: "people",
+          person: "",
+          visibility: "private",
+          content: "他说他常去爬山",
+          accessed: 0,
+          learned: today + "T00:00:00.000Z",
+          superseded_by: "",
+          volatility: "stable",
+          verified: "",
+          valid_at: today + "T00:00:00.000Z",
+          invalid_at: "",
+          conflicts_with: "",
+          sensitivity: "normal",
+          score: 0,
+          owner_key: "",
+          visibility_hold: 0,
+        },
+      ];
+    }) as unknown as SqlTag;
+    return { tag, count: () => n };
+  }
+  const env = {} as Parameters<typeof searchMemories>[1];
+
+  it("同轮同参的第二次搜索直接复用，不打第二遍库", async () => {
+    const { tag, count } = countingSql();
+    const opts = { cache: new Map() };
+    await searchMemories(tag, env, "爬山", 5, opts);
+    expect(count()).toBe(1);
+
+    const again = await searchMemories(tag, env, "爬山", 5, opts);
+    expect(count()).toBe(1); // 命中缓存：库一步都没多走
+    expect(again.map((h) => h.id)).toEqual(["m1"]);
+  });
+
+  it("缓存键连着分支标志：来客读 / 公开读 / 主线读各是各的账", async () => {
+    const { tag, count } = countingSql();
+    const cache = new Map();
+    await searchMemories(tag, env, "爬山", 5, { cache });
+    await searchMemories(tag, env, "爬山", 5, { cache, onlyPublic: true });
+    await searchMemories(tag, env, "爬山", 5, {
+      cache,
+      guestOwnerKey: "room:guest-a",
+    });
+    expect(count()).toBe(3);
+
+    // 同参再来：全部命中，一行都不多查
+    await searchMemories(tag, env, "爬山", 5, { cache });
+    await searchMemories(tag, env, "爬山", 5, { cache, onlyPublic: true });
+    expect(count()).toBe(3);
+  });
+
+  it("不给 cache 就走老路，行为不变", async () => {
+    const { tag, count } = countingSql();
+    await searchMemories(tag, env, "爬山", 5);
+    await searchMemories(tag, env, "爬山", 5);
+    expect(count()).toBe(2);
+  });
+});
+
 describe("searchMemories 的来客受限读（归属键 owner_key）", () => {
   const row = (over: Partial<Record<string, string | number>>) => ({
     id: "x",

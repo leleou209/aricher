@@ -187,6 +187,17 @@ export function memoryTools(ctx: ToolCtx) {
       execute: async (a) => {
         const { sql, env } = ctx;
 
+        // 写记忆的动作先清轮内检索缓存：刚记下/刚作废的话必须当场搜得到，
+        // 这条永远比省一次向量查询重要
+        if (
+          a.action === "add" ||
+          a.action === "supersede" ||
+          a.action === "restore" ||
+          a.action === "confirm" ||
+          a.action === "delete"
+        )
+          ctx.recallCache?.clear();
+
         if (a.action === "stats") {
           const total = countMemories(sql);
           const gone = countSuperseded(sql);
@@ -320,6 +331,7 @@ export function memoryTools(ctx: ToolCtx) {
           if (!a.query) return "search 需要提供 query。";
           const found = await searchMemories(sql, env, a.query, a.limit, {
             includeSuperseded: a.includeSuperseded,
+            cache: ctx.recallCache,
           });
           if (!found.length) return "没有相关记忆。";
           return (
@@ -508,6 +520,9 @@ export function guestMemoryTools(ctx: ToolCtx) {
         limit: z.number().int().min(1).max(20).default(5),
       }),
       execute: async (a) => {
+        // 写记忆先清轮内检索缓存：刚记下的话必须当场搜得到
+        if (a.action === "add") ctx.recallCache?.clear();
+
         if (a.action === "whoami") {
           const name = (a.person || "").trim().slice(0, 20);
           if (!name) return "whoami 需要提供 person：他自报的称呼。";
@@ -538,12 +553,9 @@ export function guestMemoryTools(ctx: ToolCtx) {
             // 主人那间没醒，用本地兜底
           }
           if (!lines.length) {
-            const local = await searchMemories(
-              ctx.sql,
-              ctx.env,
-              q,
-              a.limit,
-            ).catch(() => []);
+            const local = await searchMemories(ctx.sql, ctx.env, q, a.limit, {
+              cache: ctx.recallCache,
+            }).catch(() => []);
             lines = local.map(line);
           }
           if (!lines.length) {

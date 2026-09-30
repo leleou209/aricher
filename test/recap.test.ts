@@ -34,7 +34,6 @@ import {
 import { sessionMemoryCounts } from "../src/agent/memory";
 import type { SqlTag } from "../src/agent/state";
 
-vi.mock("../src/providers", () => ({ mainModel: () => ({ id: "fake-main" }) }));
 vi.mock("ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("ai")>();
   return {
@@ -64,6 +63,8 @@ function fakeDb(
     upto: number;
     n: number;
     schedule?: string;
+    /** 轻场：消息保持三两个字的本来面目，专测判级闸的扫过路径 */
+    light?: boolean;
   }> = [],
 ) {
   const sessions = new Map<
@@ -81,7 +82,11 @@ function fakeDb(
     msgs.set(
       s.id,
       Array.from({ length: s.n }, (_, i) =>
-        JSON.stringify(msg("第" + i + "句")),
+        // 非 light 场垫长：到点侧的字数闸（RECAP_MIN_CHARS）之下，
+        // 光秃秃的短消息到点只会被扫过 —— 要验「跑了写什么」的用例得够分量
+        JSON.stringify(
+          msg(s.light ? "第" + i + "句" : "第" + i + "句" + "记".repeat(300)),
+        ),
       ),
     );
   }
@@ -210,6 +215,8 @@ function fakeAgent(
   const agent = {
     db: db.sql,
     appEnv: {} as Env,
+    // 回想走维护模型的口（见 recap.ts）：假的不分辨是谁家的，只认「有一台」
+    maintModel: () => ({ id: "fake-maint" }),
     // 默认按主人房算 —— 绝大多数用例验的是整理本身的机制；
     // 分库（来客屋）的闸在下面单独验
     isOwnerRoom: true,
@@ -603,6 +610,77 @@ describe("runSessionRecap：句柄消费与重试记账", () => {
     const { agent } = fakeAgent(db, { selfWork: Promise.resolve() });
     await runSessionRecap(agent, { id: "s1" });
     expect(db.session("s1").schedule).not.toBe("");
+  });
+});
+
+/**
+ * 回想判级：轻重两道闸。
+ *
+ * 排程侧看条数（攒不够不醒，防白醒循环），到点侧看字数（没分量不烧模型）。
+ * 两道闸的共同目标：回想是记账，账本上没几行字就别动用一次模型调用。
+ */
+describe("回想判级：轻重两道闸", () => {
+  it("排程侧：新话就差一条的场不排程 —— 攒着，等攒够一次想", async () => {
+    const db = fakeDb([
+      { id: "s1", lastActive: iso(1000), upto: 2, n: 3 }, // 新内容只有 1 条
+    ]);
+    const { agent, scheduled, cancelled } = fakeAgent(db);
+
+    await scheduleRecap(agent, "s1");
+
+    expect(scheduled).toHaveLength(0);
+    // 闸挡下连旧句柄都不碰：它若在，到点那趟自会消费，不会悬空
+    expect(cancelled).toHaveLength(0);
+  });
+
+  it("到点侧：这一段没几个字，扫过推游标，不烧模型不重排", async () => {
+    const db = fakeDb([
+      {
+        id: "s1",
+        lastActive: iso(RECAP_IDLE_MS * 2),
+        upto: 0,
+        n: 2,
+        light: true,
+      },
+    ]);
+    const { agent, scheduled, persisted } = fakeAgent(db);
+
+    await runSessionRecap(agent, { id: "s1" });
+
+    expect(generateText).not.toHaveBeenCalled();
+    // 销账：游标推过这一段，记一笔「想过了」—— 不是失败，不进重试
+    expect(db.session("s1").upto).toBe(2);
+    expect(db.session("s1").at).not.toBe("");
+    expect(persisted).toHaveLength(0);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it("到点侧的闸拦不住管理员：force 照跑", async () => {
+    const db = fakeDb([
+      {
+        id: "s1",
+        lastActive: iso(RECAP_IDLE_MS * 2),
+        upto: 0,
+        n: 2,
+        light: true,
+      },
+    ]);
+    const { agent } = fakeAgent(db);
+
+    await runSessionRecap(agent, { id: "s1", force: true });
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("自愈不给轻场排程：不然每场醒来一趟，白醒循环又回来了", async () => {
+    const db = fakeDb([
+      { id: "s1", lastActive: iso(RECAP_IDLE_MS * 2), upto: 2, n: 3 },
+    ]);
+    const { agent, scheduled } = fakeAgent(db);
+
+    await resyncRecaps(agent);
+
+    expect(scheduled).toHaveLength(0);
   });
 });
 

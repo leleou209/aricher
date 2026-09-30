@@ -177,7 +177,9 @@ import {
   ensureVisitorSchema,
   listVisitorEvents,
   listVisitorRooms,
-  logVisitorEvent,
+  logVisitorEventBatch,
+  logVisitorEventRow,
+  buildVisitorEvent,
   registerVisitorRoom as registerVisitorRoomRow,
   type VisitorEvent,
   type VisitorRoom,
@@ -582,13 +584,11 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     const q = (query || "").trim();
     if (!q) return [];
     ensureMemorySchema(this.db);
-    const hits = await searchMemories(
-      this.db,
-      this.env,
-      q,
-      limit,
-      ownerKey ? { guestOwnerKey: ownerKey } : { onlyPublic: true },
-    ).catch(() => []);
+    const hits = await searchMemories(this.db, this.env, q, limit, {
+      guestOwnerKey: ownerKey || undefined,
+      onlyPublic: !ownerKey,
+      cache: this.recallCache,
+    }).catch(() => []);
     return memoryHitLines(hits);
   }
 
@@ -1847,6 +1847,8 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       sql: this.db,
       room: this.name,
       guest: !this.isOwnerRoom,
+      // 轮内检索缓存与屋子里其他搜索共用一份（onChatMessage 每轮开头清）
+      recallCache: this.recallCache,
       // 这一档的对外能力开关（无档 = undefined = 全开，见 tools/index.ts）
       guestType: this.state.guestType,
       // 用 getter 保证工具读到的是最新 state（同一轮内多个工具会互相看到写入）
@@ -1909,6 +1911,8 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
 
     // 上一轮可能中途断了、统计没来得及写回，这里补一次（没攒下东西就一个字都不写）
     this.flushToolStats();
+    // 新一轮新账：轮内检索缓存清掉 —— 上轮搜过的词这轮重搜，得能看见新记的记忆
+    this.recallCache.clear();
 
     const ctx = this.toolCtx();
     const guest = !this.isOwnerRoom;
@@ -1916,8 +1920,12 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       .reverse()
       .find((m) => m.role === "user");
     const userText = lastUser ? messageText(lastUser) : "";
-    // 来客的发言本身也是留痕的一部分：记原文（visitor.ts 里会截到 300 字）
-    if (guest && userText) this.logVisitor("message", userText);
+    // 来客的发言本身也是留痕的一部分：记原文（visitor.ts 里会截到 300 字）。
+    // 这一轮的留痕从现在起先记账内存，轮尾收成一行（见 endVisitorBatch）
+    if (guest) {
+      this.beginVisitorBatch();
+      if (userText) this.logVisitor("message", userText);
+    }
     // 开一轮「她正在想什么」。号要留着，收尾时认得出飘过来的是不是这一轮
     const turn = this.thinker.begin(userText);
 
@@ -1949,12 +1957,9 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
           // 主人那间没醒，用本地兜底
         }
         if (!lines.length) {
-          const hits = await searchMemories(
-            this.db,
-            this.env,
-            userText,
-            5,
-          ).catch(() => []);
+          const hits = await searchMemories(this.db, this.env, userText, 5, {
+            cache: this.recallCache,
+          }).catch(() => []);
           lines = memoryHitLines(hits);
         }
         if (lines.length) {
@@ -1963,9 +1968,9 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
             lines.join("\n");
         }
       } else {
-        const hits = await searchMemories(this.db, this.env, userText, 5).catch(
-          () => [],
-        );
+        const hits = await searchMemories(this.db, this.env, userText, 5, {
+          cache: this.recallCache,
+        }).catch(() => []);
         if (hits.length) {
           memoryBlock =
             "\n\n## 相关记忆（检索自长期记忆库）\n" +
@@ -2020,7 +2025,11 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       tools: this.buildToolsWithStats(ctx),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: options?.abortSignal,
-      onFinish,
+      onFinish: (r) => {
+        // 轮尾收账：这一轮的留痕整块一行落库，再去跑外面的收尾
+        this.endVisitorBatch();
+        return onFinish(r);
+      },
       // 「她正在想什么」只记不发：这里回调期间流是停着的，一次模型调用就能把整轮拖住
       onChunk: ({ chunk }) => this.thinker.observe(chunk),
       // 输出上限跟着生效的配置走 —— 每家厂商的墙不一样高，管理员按自己那家填。
@@ -2552,6 +2561,7 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     ensureMemorySchema(this.db);
     return searchMemories(this.db, this.env, query, limit, {
       includeSuperseded,
+      cache: this.recallCache,
     });
   }
 
@@ -2806,11 +2816,61 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
    * 记一笔来客行为。只在来客那间记 —— 主人自己的操作不进这份账。
    * 「留痕且明说」是守则里的承诺：这张表的存在会在进门介绍页讲清楚，
    * 客人随时能用 visitor_log 工具翻到自己的全部账目。
+   *
+   * 落库走两条路：轮内（攒批开着）先记账内存，轮尾收成一行 ——
+   * 行写入是 CF 计费的最矮墙，一轮几笔收一行，行数省一个数量级；
+   * 轮外（进门、面板）单笔直落 —— 没有轮尾那一刻替它收口，攒着就是悬账。
    */
   logVisitor(kind: string, detail = ""): void {
     if (this.isOwnerRoom) return;
     this.ensureVisitor();
-    logVisitorEvent(this.db, this.name, this.state.guestName, kind, detail);
+    const ev = buildVisitorEvent(this.name, this.state.guestName, kind, detail);
+    if (this.visitorBuffer) {
+      this.visitorBuffer.push(ev);
+      if (this.visitorBuffer.length >= this.visitorBatchMax) {
+        // 满了就地整块落地，攒批态继续 —— 这一轮还没完
+        const buf = this.visitorBuffer;
+        this.visitorBuffer = [];
+        logVisitorEventBatch(this.db, buf);
+      }
+    } else {
+      logVisitorEventRow(this.db, ev);
+    }
+  }
+
+  /** 一块最多装多少笔：再大单行就开始笨重，拆开写不亏 */
+  private readonly visitorBatchMax = 10;
+  /** 轮内攒批的账。null = 没在攒批（轮外） */
+  private visitorBuffer: VisitorEvent[] | null = null;
+
+  /**
+   * 轮内攒批开始。上一轮若没收到尾（流中途断了、onFinish 没轮到），
+   * 残余先落地再开新账 —— 别把两轮的话并进同一块。
+   */
+  private beginVisitorBatch(): void {
+    this.flushVisitorBuffer();
+    this.visitorBuffer = [];
+  }
+
+  /**
+   * 轮尾收账：这一轮的留痕整块一行落库。
+   * 落库失败不能拖住外面的收尾 —— 消息保存只有一次，留痕这一块丢了日志里能查到。
+   */
+  private endVisitorBatch(): void {
+    const buf = this.visitorBuffer;
+    this.visitorBuffer = null;
+    if (!buf?.length) return;
+    try {
+      logVisitorEventBatch(this.db, buf);
+    } catch (e) {
+      console.error("[visitor] 轮尾留痕落库失败，这一块丢了：", e);
+    }
+  }
+
+  private flushVisitorBuffer(): void {
+    const buf = this.visitorBuffer;
+    this.visitorBuffer = null;
+    if (buf?.length) logVisitorEventBatch(this.db, buf);
   }
 
   /** 到主人那间报个到：管理面板的名册从这里来。报不上（主间没醒）不影响接待。 */
@@ -2837,6 +2897,8 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
   /** 本间屋子的全部留痕，新的在前。来客翻自己的账走这条路。 */
   async visitorEvents(): Promise<VisitorEvent[]> {
     this.ensureVisitor();
+    // 读前把账收了：轮里攒着没落的那几笔，翻账的时候必须看得到
+    this.flushVisitorBuffer();
     return listVisitorEvents(this.db, this.name, 500);
   }
 
@@ -3260,8 +3322,18 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
    */
   private _resolved: ResolvedModel | null = null;
 
-  /** 维护模型：优先用主对话解析出的那份；没开过聊（如夜间任务先跑）就回落 secrets 链。 */
-  private maintModel(): LanguageModel | null {
+  /**
+   * 轮内记忆检索缓存：同轮同词的搜索复用一次向量查询的结果（Vectorize 按维度计费）。
+   * 生命周期：onChatMessage 开头清一次；写记忆的工具执行时也会当场清 ——
+   * 刚记下的话必须当场搜得到，这条永远比省一次查询重要。
+   */
+  private readonly recallCache = new Map<string, MemEntry[]>();
+
+  /**
+   * 维护模型：优先用主对话解析出的那份；没开过聊（如夜间任务先跑）就回落 secrets 链。
+   * 回想（recap.ts）也走这道口 —— 那是后台记账，不值得动用主线那台按量计费的。
+   */
+  maintModel(): LanguageModel | null {
     return this._resolved?.maintModel ?? maintenanceModel(this.env);
   }
 

@@ -10,7 +10,6 @@
 
 import type { UIMessage } from "ai";
 import { generateText, stepCountIs } from "ai";
-import { mainModel } from "../providers";
 import { memoryTools } from "../tools/memory";
 import { sessionMemoTools } from "../tools/sessionMemo";
 import type { CoworkAgent } from "./cowork";
@@ -33,6 +32,18 @@ export const RECAP_TASK = "recapSession";
 export const RECAP_WINDOW = 60;
 /** 失败重排的间隔。重排一次就够 —— 第三次还失败说明是模型那边的事，不该一直烧。 */
 export const RECAP_RETRY_MS = 2 * 60 * 60 * 1000;
+/**
+ * 排程侧粗闸：上次回想之后新话不足这个条数的场，不排程。
+ * 就差一两句话的场醒来一趟，多半只买回一句干瘪的记录 —— 先攒着，攒出分量再想。
+ * 闸挡下时不排新闹钟；若还留着旧句柄，到点那趟自会把它消费掉，不会悬空。
+ */
+export const RECAP_MIN_NEW = 2;
+/**
+ * 到点侧精闸：这一段拢共没多少字的，不值得专门烧一趟模型。
+ * 扫过是裁决不是失败 —— 游标直接推过去销账，不进重试；等下一段攒出分量再说。
+ * 只有到点自动回想吃这道闸，管理员 force 不受它管。
+ */
+export const RECAP_MIN_CHARS = 400;
 /**
  * 启动自愈时，一批欠着回想的场之间的间隔。
  * 老会话统一之后，第一次升级会一下子冒出几十场「欠回想」——
@@ -64,6 +75,8 @@ function dueAt(lastActive: string, now = Date.now()): number {
  * 推的正是「最后一次发言之后半小时」这个概念本身。
  * 旧的那次先撤掉：不撤的话一场对话会攒下十几个闹钟，到点全响。
  *
+ * 并非每场都值得排：新话攒不够 RECAP_MIN_NEW 条的轻场不排（见该常量）。
+ *
  * 只有主人那间排：长期来客是对接者，ericher 在他面前是接待员。
  * 来客屋的记忆是分库 —— 分库自己不整理，素材走 receiveGuestMemory
  * 汇进主人那间的整理。不然每间来客屋半小时空闲就烧一次主模型，
@@ -79,7 +92,9 @@ export async function scheduleRecap(
   const s = getSession(agent.db, sessionId);
   if (!s) return;
 
-  const { schedule } = getSessionRecap(agent.db, sessionId);
+  const { upto, schedule } = getSessionRecap(agent.db, sessionId);
+  // 排程侧粗闸：轻场攒着，不醒这一趟（见 RECAP_MIN_NEW）
+  if (s.msgCount - upto < RECAP_MIN_NEW) return;
   if (schedule) await agent.cancelSchedule(schedule).catch(() => {});
 
   const at = new Date(
@@ -150,16 +165,33 @@ export async function runSessionRecap(
   const fresh = freshSegment(agent, payload.id);
   if (!fresh) return; // 没有新内容：不跑、不写、游标不动
 
-  const model = mainModel(agent.appEnv);
-  if (!model) return; // 没配主模型：什么都没发生，下次到点还有机会
-
   const { segment, from } = fresh;
+
+  // 到点侧精闸：这一段拢共没几个字，专门烧一趟模型记它不划算。
+  // 扫过是裁决不是失败 —— 游标推过去就销账，不进重试；force 是管理员
+  // 亲自按的那一下，他说看就看
+  if (!payload.force && segmentChars(segment) < RECAP_MIN_CHARS) {
+    setSessionRecap(
+      agent.db,
+      payload.id,
+      from + segment.length,
+      new Date().toISOString(),
+    );
+    return;
+  }
+
+  // 回想走维护模型的口（与夜间整理同源）：它是后台记账，不值得动用主线那台
+  // 按量计费的 —— 管理员给维护配了更便宜的，这里自动跟上；没配则回落主模型
+  const model = agent.maintModel();
+  if (!model) return; // 一个模型都没配：什么都没发生，下次到点还有机会
 
   // 这一趟回想的幂等键：她写下的每条记忆都带着它。写回失败、游标没推进时，
   // 重跑的这一趟再写同键的记忆会被写入层跳过 —— 同一段不该记两遍
   const dedupe = `${payload.id}:${from}`;
   const recapCtx = {
     ...agent.toolCtx(),
+    // 回想是独立的闹钟轮，不吃主轮留下的检索缓存 —— 那是上一个对话轮的账
+    recallCache: new Map(),
     recapSessionId: payload.id,
     recapDedupe: dedupe,
   };
@@ -242,6 +274,14 @@ export function freshSegment(
   const from = Math.max(upto, msgs.length - RECAP_WINDOW);
   if (msgs.length <= from) return null;
   return { segment: msgs.slice(from), from };
+}
+
+/** 这一段有多大（字符近似）：只数正文文字，id、时间戳那些外壳不算数 */
+function segmentChars(segment: UIMessage[]): number {
+  let n = 0;
+  for (const m of segment)
+    for (const p of m.parts) if (p.type === "text") n += p.text.length;
+  return n;
 }
 
 /**

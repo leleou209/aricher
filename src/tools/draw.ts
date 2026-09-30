@@ -374,7 +374,9 @@ async function findImage(
   const q = (query || "").trim();
   if (!q) return null;
   try {
-    const hits = await searchMemories(ctx.sql, ctx.env, q, 8);
+    const hits = await searchMemories(ctx.sql, ctx.env, q, 8, {
+      cache: ctx.recallCache,
+    });
     const hit = hits.find((e) => e.type === "image" && e.fileKey);
     if (hit) return { key: hit.fileKey, content: hit.content };
   } catch {

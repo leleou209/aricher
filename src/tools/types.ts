@@ -4,7 +4,7 @@ import type { Note, NoteInput, NoteMeta } from "../agent/noteStore";
 import type { GuestTypeInfo } from "../agent/guestTypes";
 import type { Reminder } from "../agent/reminderStore";
 import type { RecallHit, SessionMeta } from "../agent/sessionStore";
-import type { ChatState, SqlTag } from "../agent/state";
+import type { ChatState, MemEntry, SqlTag } from "../agent/state";
 
 export interface ToolCtx {
   env: Env;
@@ -84,6 +84,12 @@ export interface ToolCtx {
    * 不会把同一段再记一遍。
    */
   recapDedupe?: string;
+  /**
+   * 轮内检索缓存：一轮里同一个词翻第二遍记忆库，不该再花一遍向量查询的钱。
+   * 谁发这个 ctx 谁管生命周期（一轮一清）；写记忆的动作必须当场清它 ——
+   * 刚记下的话当场就该搜得到。
+   */
+  recallCache?: Map<string, MemEntry[]>;
 }
 
 /** 统一的工具返回：字符串直接作为 tool result 交给模型 */
