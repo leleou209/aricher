@@ -76,6 +76,21 @@
   animation: rise-in 0.18s ease-out;
 }
 
+/* 内联注入的 mermaid 大图：svg 根是 width 100% + max-width 的，得把容器框住 */
+.lightbox-svg {
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+.lightbox-svg svg {
+  max-width: min(86vw, 1400px);
+  max-height: 82vh;
+  width: auto;
+  height: auto;
+}
+
 /* 没取回来时的说明卡：地址可能很长，得能断行 */
 .lightbox-miss {
   max-width: min(86vw, 560px);
