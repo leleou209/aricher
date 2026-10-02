@@ -27,6 +27,7 @@ import type {
   Shelf,
   TagGate,
   TagStat,
+  ToolCatalog,
   TtsConfig,
   TtsProtocol,
   Voice,
@@ -142,8 +143,17 @@ export const api = {
   // ── 配置态（任务 / 禁令 / 技能 / 联系人 / 思考模式 / 自我认知 / 人格提示词）──
   getConfig: () => req<ChatState>("/api/config"),
 
-  /** 人格提示词的出厂默认值，供「恢复默认」用 */
-  getDefaultPrompt: () => req<string>("/api/prompt"),
+  /**
+   * 两份可编辑提示词的出厂默认值（守则 / 回想守则），供「恢复默认」用。
+   * 工具那份不在这里 —— 它拆成了逐工具的稿子，出厂稿随名册走，见 getToolGroups。
+   */
+  getDefaultPrompt: () => req<{ base: string; recap: string }>("/api/prompt"),
+
+  /**
+   * 工具名册：组 → 工具，两侧（主人/来客）的出厂稿与当前自定义。
+   * 「工具守则」面板与「来客权限」页共用这一份（仅管理员）。
+   */
+  getToolGroups: () => req<ToolCatalog>("/api/tool-groups"),
 
   patchConfig: (patch: Partial<ChatState>) =>
     req<ChatState>("/api/config", json("POST", { patch })),
@@ -460,9 +470,8 @@ export const api = {
     name: string;
     password: string;
     note?: string;
-    permSearch?: boolean;
-    permDraw?: boolean;
-    permMemory?: boolean;
+    /** 对外工具的逐件权益；不给时后端按旧开关/缺省推平 */
+    tools?: string[];
     permNotes?: boolean;
     permFiles?: boolean;
     permPublic?: boolean;
@@ -472,9 +481,7 @@ export const api = {
     name?: string;
     password?: string;
     note?: string;
-    permSearch?: boolean;
-    permDraw?: boolean;
-    permMemory?: boolean;
+    tools?: string[];
     permNotes?: boolean;
     permFiles?: boolean;
     permPublic?: boolean;

@@ -149,6 +149,26 @@ function loadMermaid(): Promise<(typeof import("mermaid"))["default"]> {
 }
 
 /**
+ * mermaid 画图时的落脚处。
+ *
+ * 不给容器，mermaid 会把它临时搭的那层 div 直接挂到 document.body 末尾 ——
+ * 而且不带任何定位样式（mermaid 源码 appendDivSvgG 里，无容器那条支路 divStyle 是空的）。
+ * 于是一刷新就出洋相：内存缓存空、每张图都要从头画，页面最底下（输入框之下）会实打实
+ * 多出一张还没上色的图，文档高度跟着长一截 —— 看着就像「下面有什么在渲染」。
+ * 给一个藏在屏外、visibility:hidden 的容器，图照样画得出来（量文字要用 getBBox，
+ * 得保留排版，所以不能用 display:none），画完取源码即弃，页面上不留痕迹。
+ * 每张图各给一个容器：mermaid 开画前会先清空容器，共用一个会把并发的另几张擦掉。
+ */
+function newMermaidStage(): HTMLDivElement {
+  const stage = document.createElement("div");
+  stage.setAttribute("aria-hidden", "true");
+  stage.style.cssText =
+    "position:fixed;top:0;left:0;width:100%;visibility:hidden;pointer-events:none;z-index:-1;";
+  document.body.appendChild(stage);
+  return stage;
+}
+
+/**
  * 一段 mermaid 源码 → 一张图。渲染失败把错误摆出来而不是吞掉 ——
  * 空卡片没人知道为什么，摆出来她改一版重发就是。
  */
@@ -164,22 +184,45 @@ function MermaidView({ source, alt }: { source: string; alt: string }) {
     }
     setSvg("");
     let alive = true;
+    const stage = newMermaidStage();
     loadMermaid()
       .then(async (mm) => {
         const { svg: out } = await mm.render(
           "mmd-" + Math.random().toString(36).slice(2),
           source,
+          stage,
         );
         if (mermaidSvgCache.size > 200) mermaidSvgCache.clear();
         mermaidSvgCache.set(source, out);
+        // 图渲出来长什么样，先在这儿留个底：看图层量到 0 宽时，这是唯一的对照物。
+        // foreignObject / width / max-width 这三样正是内联能不能立住的关键。
+        console.warn("[看图] mermaid 渲染成功", {
+          源码行数: source.split("\n").length,
+          svg长度: out.length,
+          带foreignObject: out.includes("foreignObject"),
+          带HTML标签: /<(div|span|p)\b/i.test(out),
+          viewBox: /viewBox="([^"]*)"/.exec(out)?.[1] ?? "(无)",
+          svg的width属性: /<svg[^>]*\swidth="([^"]*)"/.exec(out)?.[1] ?? "(无)",
+          内联maxWidth: /max-width:\s*([^;"]*)/.exec(out)?.[1] ?? "(无)",
+          主题: mermaidThemeKey,
+        });
         if (alive) {
           setSvg(out);
           setErr("");
         }
       })
       .catch((e) => {
+        // 整颗错误对象都摆出来：只取 message 会丢掉 mermaid 抛的语法细节
+        console.error("[看图] mermaid 渲染失败", {
+          源码前200字: source.slice(0, 200),
+          错误对象: e,
+          消息: e instanceof Error ? e.message : String(e),
+          主题: mermaidThemeKey,
+        });
         if (alive) setErr(e instanceof Error ? e.message : String(e));
-      });
+      })
+      // 画完（无论成没成）把落脚处撤掉：留在 body 里就是一堆看不见的空壳
+      .finally(() => stage.remove());
     return () => {
       alive = false;
     };
@@ -221,13 +264,17 @@ function MermaidFile({ src, alt }: { src: string; alt: string }) {
     setSource("");
     setErr("");
     fetch(src)
-      .then((r) =>
-        r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)),
-      )
+      .then((r) => {
+        console.warn("[看图] .mmd 取源码回来", { 状态码: r.status, ok: r.ok });
+        return r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`));
+      })
       .then((t) => {
         if (alive) setSource(t);
       })
       .catch((e) => {
+        console.error("[看图] .mmd 源码没取回来", {
+          原因: e instanceof Error ? e.message : String(e),
+        });
         if (alive) setErr(e instanceof Error ? e.message : String(e));
       });
     return () => {
@@ -260,7 +307,15 @@ function MermaidFile({ src, alt }: { src: string; alt: string }) {
 function Drawn({ output }: { output: unknown }) {
   if (typeof output !== "string") return null;
   const m = /!\[[^\]]*\]\((\/api\/files\/[^)\s]+)\)/.exec(output);
-  if (!m) return null;
+  if (!m) {
+    // 工具结果里明明有图片地址，却没被认成 markdown 图片行 —— 多半是模型没按
+    // 约定的形状写那一行。这正是「说了画好了、却什么都看不见」的常见断点。
+    if (output.includes("/api/files/"))
+      console.warn("[看图] 工具卡里没认出图片行（地址形状不对）", {
+        片段: output.slice(0, 200),
+      });
+    return null;
+  }
   const src = m[1];
   // .mmd 是 mermaid 源码，得取回来渲染；.svg（旧图）和位图照旧当 <img>
   if (/\.mmd($|\?)/.test(src))
@@ -273,6 +328,11 @@ function Drawn({ output }: { output: unknown }) {
       title="点开看大图"
       loading="lazy"
       onClick={() => zoomIn(src, "画出来的图")}
+      onError={() =>
+        console.error("[看图] 工具卡里的位图没加载出来", {
+          地址: src,
+        })
+      }
     />
   );
 }
@@ -368,6 +428,9 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
                 loading="lazy"
                 title="点开看大图"
                 onClick={() => zoomIn(String(rest.src || ""), alt || "")}
+                onError={() =>
+                  console.error("[看图] 正文里的图没加载出来", { 地址: src })
+                }
               />
             );
           },
@@ -500,7 +563,11 @@ type ArtSeg =
   | { kind: "text"; text: string }
   | { kind: "artifact"; key: string; title: string };
 
-const ARTIFACT_RE = /\[artifact\s+(\/?[\w./-]+)\s+([^\]\n]+?)\s*\]/g;
+// key 那一段不能只收 ASCII 的 [\w./-]：会话产物存在
+// `f/<屋>/会话/<会话id>/…` 下，中间那段目录名就是中文（SESSION_FOLDER = "会话"），
+// 收窄的字符集会让整行认不出来、原样漏成文本 —— key 里本来就不会有空白，
+// 按「一段非空白」收就够，顺带把来客名字之类的中文屋名也一起兜住。
+const ARTIFACT_RE = /\[artifact\s+(\S+)\s+([^\]\n]+?)\s*\]/g;
 
 export function splitArtifacts(text: string): ArtSeg[] {
   const segs: ArtSeg[] = [];
@@ -517,17 +584,73 @@ export function splitArtifacts(text: string): ArtSeg[] {
   return segs.length ? segs : [{ kind: "text", text }];
 }
 
+/**
+ * 从卡片 HTML 里把它那张 SVG 抠出来。
+ *
+ * 卡片是 sandboxed iframe（sandbox 里没有 allow-same-origin），父页面摸不到里面的
+ * DOM —— 所以不能直接读 iframe 里的 svg，只能把文件再取一遍自己解析。DOMParser
+ * 不执行脚本，取 outerHTML 会把 svg 自带的 <style> 一并带走，样式不丢。
+ * 挑节点最多的那张：手写卡片常顺手塞个 16×16 的小图标，抓错了就只能放大一个点。
+ */
+function pickSvg(html: string): string {
+  const svgs = Array.from(
+    new DOMParser().parseFromString(html, "text/html").querySelectorAll("svg"),
+  );
+  const main = svgs.find((s) => s.querySelectorAll("*").length > 20) ?? svgs[0];
+  return main?.outerHTML ?? "";
+}
+
 function ArtifactCard({ keyName, title }: { keyName: string; title: string }) {
   // key 里的斜杠是路径分隔，其余字符逐段编码
   const src = `/api/files/${keyName
     .split("/")
     .map(encodeURIComponent)
     .join("/")}`;
+  // 抠出来的 svg 留着复用：null = 还没取过，"" = 取过、但没有能放大的图
+  const [svg, setSvg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  /**
+   * 放大。图困在 iframe 里，点它不冒泡到外面（mermaid 那张是内联 SVG，所以点得开）
+   * —— 只能走「取文件 → 抠出 svg → 交给看图浮层」这条迂回路。真交互卡片
+   * （表格、仪表盘）没有能放大的矢量图，退回「新窗口打开」那条老路。
+   */
+  const zoom = async () => {
+    let source = svg;
+    if (source === null) {
+      setBusy(true);
+      try {
+        source = pickSvg(await (await fetch(src)).text());
+      } catch {
+        source = "";
+      }
+      setSvg(source);
+      setBusy(false);
+    }
+    if (source) zoomIn("", title, source);
+    else window.open(src, "_blank", "noreferrer");
+  };
+
   return (
     <div className="artifact-card">
       <div className="artifact-head">
         <Icon name="layers" size={14} />
-        <span className="artifact-title">{title}</span>
+        <button
+          type="button"
+          className="artifact-title"
+          title="点开看大图"
+          onClick={zoom}
+        >
+          {title}
+        </button>
+        <button
+          type="button"
+          className="artifact-zoom"
+          onClick={zoom}
+          disabled={busy}
+        >
+          {busy ? "取图中…" : "放大"}
+        </button>
         <a
           href={src}
           target="_blank"
@@ -942,7 +1065,7 @@ const Message = memo(function Message({
           {thoughts?.length ? (
             <Thoughts lines={thoughts} now={!!streaming && !shown} />
           ) : null}
-          {streaming && <span className="caret" />}
+          {streaming && <span className="live-spin" />}
         </div>
         {!streaming && (
           <Foot

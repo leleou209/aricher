@@ -716,6 +716,187 @@ span.status {
   border-radius: var(--yuzhe-r-s);
 }
 
+/* ── 工具守则：语义组 → 逐工具两级 ──
+   每组一个可折叠栏目，组内一件工具一格（GuideField）。 */
+.guide-group {
+  border: 1px solid var(--yuzhe-line-soft);
+  border-radius: var(--yuzhe-r-m);
+  overflow: hidden;
+}
+
+.guide-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  background: var(--yuzhe-bg-soft);
+  color: var(--yuzhe-ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.guide-group-head:hover {
+  background: var(--yuzhe-bg-hover);
+}
+
+.guide-group-head.static {
+  cursor: default;
+}
+
+.guide-group-head .meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.guide-group-head .meta:last-child {
+  flex: 0 0 auto;
+}
+
+.guide-group-label {
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.guide-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.guide-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.guide-field-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.guide-field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--yuzhe-ink-dim);
+}
+
+.guide-field-head .meta {
+  margin-left: auto;
+}
+
+.guide-field-head .meta ~ .meta {
+  margin-left: 0;
+}
+
+.guide-field-head .btn-sm {
+  padding: 2px 8px;
+}
+
+.guide-textarea {
+  width: 100%;
+  min-height: 40px;
+  resize: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* ── 来客权限矩阵：各档 × 各工具 ── */
+.perm-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.perm-matrix {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 12.5px;
+}
+
+.perm-matrix th,
+.perm-matrix td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--yuzhe-line-soft);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.perm-matrix thead th {
+  color: var(--yuzhe-ink-faint);
+  font-weight: 500;
+  border-bottom: 1px solid var(--yuzhe-line);
+}
+
+.perm-corner,
+.perm-rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--yuzhe-surface);
+  text-align: left;
+}
+
+.perm-rowhead {
+  font-weight: 600;
+  color: var(--yuzhe-ink-strong);
+}
+
+.perm-rowhead .tag {
+  margin-left: 6px;
+}
+
+.perm-always {
+  opacity: 0.6;
+}
+
+.perm-always-tag {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--yuzhe-ink-faint);
+}
+
+.perm-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: var(--yuzhe-r-s);
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-faint);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.perm-cell.on {
+  border-color: var(--yuzhe-line-strong);
+  background: var(--yuzhe-black);
+  color: var(--yuzhe-on-black);
+}
+
+.perm-cell.locked {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.perm-cell:disabled {
+  opacity: 0.4;
+}
+
 /* ── 手机：单列、留白收一档，登记条贴边 ── */
 @media (max-width: 860px) {
   .panel-body {
@@ -734,5 +915,9 @@ span.status {
 
   .row-actions .btn-sm {
     padding: 3px 8px;
+  }
+
+  .guide-group-body {
+    padding: 10px;
   }
 }

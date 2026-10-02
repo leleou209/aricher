@@ -169,6 +169,31 @@ export interface ChatState {
   selfDemandLog: string[];
   /** 管理员自定义的人格提示词；为空表示用内置默认（DEFAULT_BASE_PROMPT） */
   basePrompt: string;
+  /**
+   * 逐工具的工具提示词（主人那间）：name → 文本，空/缺 = 用 toolGroups.ts 的出厂稿。
+   * 原来的整块 toolPrompt（一整篇工具守则）已拆除：想改哪个工具就改哪一格，
+   * 改 read_url 不会再牵动 draw —— 整篇一起改的时代过去了。
+   */
+  toolPrompts: Record<string, string>;
+  /** 每个语义组的组尾追加稿：groupId → 文本，空 = 用出厂稿 */
+  toolGroupNotes: Record<string, string>;
+  /** 末栏「工具使用风格」：全局一份（调用纪律、call_tool 用法、场景分发、主动开口） */
+  toolStyle: string;
+  /**
+   * 来客那间的逐工具稿（管理员改，来客房整理提示词时隔着 DO RPC 读）。
+   * 来客版与主人版分开存：两间说的话不一样，共用一份会串味。
+   * 空/缺 = 用出厂稿。
+   */
+  guestToolPrompts: Record<string, string>;
+  /** 来客那间的组尾追加稿 */
+  guestToolGroupNotes: Record<string, string>;
+  /** 来客那间的末栏风格 */
+  guestToolStyle: string;
+  /**
+   * 管理员自定义的回想守则（没人说话时那一趟回想的提示词）；为空表示用内置默认。
+   * 回想的口径是工作纪要，不是感想 —— 想改回情绪化表达，也得先在这儿写出来。
+   */
+  recapPrompt: string;
   skills: Record<string, string[]>;
   tasks: Task[];
   /** 还摆在他眼前、没被回答的问题（答完即删）。见 AskEntry */
@@ -360,6 +385,13 @@ export const INITIAL_STATE: ChatState = {
   selfDemandVer: 0,
   selfDemandLog: [],
   basePrompt: "",
+  toolPrompts: {},
+  toolGroupNotes: {},
+  toolStyle: "",
+  guestToolPrompts: {},
+  guestToolGroupNotes: {},
+  guestToolStyle: "",
+  recapPrompt: "",
   skills: {},
   tasks: [],
   asks: [],
@@ -402,6 +434,13 @@ export const PATCHABLE_KEYS = [
   "selfDemandVer",
   "selfDemandLog",
   "basePrompt",
+  "toolPrompts",
+  "toolGroupNotes",
+  "toolStyle",
+  "guestToolPrompts",
+  "guestToolGroupNotes",
+  "guestToolStyle",
+  "recapPrompt",
   "skills",
   "tasks",
   "thinkMode",

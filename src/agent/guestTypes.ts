@@ -14,6 +14,7 @@
 
 import { timingSafeEqual } from "../auth";
 import type { SqlTag } from "./state";
+import { GUEST_ALWAYS_ON } from "./toolGroups";
 
 export interface GuestTypeRow {
   id: string;
@@ -22,6 +23,16 @@ export interface GuestTypeRow {
   password: string;
   /** 接待说明：进提示词，告诉 ericher 这一档该怎么待 */
   note: string;
+  /**
+   * 这一档开着的对外工具名（见 toolGroups.ts 的 GUEST_TOGGLABLE_TOOLS）。
+   * 恒开的那些（天气/识图/卡片/留痕）不在这里 —— 它们没有关掉的路。
+   */
+  tools: string[];
+  /**
+   * 上面三个老开关：逐工具化之前，检索/画画/记忆各是一个开关。
+   * 现在运行时只认 tools，它们退成**迁移依据** —— 只有 tools 还是空串
+   * （这一档从没被新面板写过）时才拿它们推一次（见 rowToType）。
+   */
   permSearch: boolean;
   permDraw: boolean;
   permMemory: boolean;
@@ -35,14 +46,21 @@ export interface GuestTypeRow {
   created: string;
 }
 
-/** 对外回显的行：剥掉密码。摘要也不给 —— 管理员忘了口令就重设，没有「查回来看」这条路 */
-export type GuestTypePublic = Omit<GuestTypeRow, "password">;
+/**
+ * 对外回显的行：剥掉密码，也剥掉三个老开关（前端只认 tools）。
+ * 摘要也不给 —— 管理员忘了口令就重设，没有「查回来看」这条路。
+ */
+export type GuestTypePublic = Omit<
+  GuestTypeRow,
+  "password" | "permSearch" | "permDraw" | "permMemory"
+>;
 
 interface TypeRow {
   id: string;
   name: string;
   password: string;
   note: string;
+  tools: string;
   perm_search: number | boolean;
   perm_draw: number | boolean;
   perm_memory: number | boolean;
@@ -58,6 +76,8 @@ export interface GuestTypeInput {
   name: string;
   password: string;
   note?: string;
+  tools?: string[];
+  /** 老开关：只有 tools 没给时才拿来推一次（兼容老客户端） */
   permSearch?: boolean;
   permDraw?: boolean;
   permMemory?: boolean;
@@ -71,6 +91,7 @@ export interface GuestTypePatch {
   name?: string;
   password?: string;
   note?: string;
+  tools?: string[];
   permSearch?: boolean;
   permDraw?: boolean;
   permMemory?: boolean;
@@ -83,6 +104,79 @@ export interface GuestTypePatch {
 /** SQLite 的 1/0 和假库里的 true/false 都归一成布尔 */
 function toBool(v: number | boolean): boolean {
   return v === 1 || v === true;
+}
+
+/** 老开关与新工具的对应：迁移时一次推平（逐工具化之前的三个开关） */
+const LEGACY_TOOL_MAP: Array<{
+  key: "permSearch" | "permDraw" | "permMemory";
+  tools: string[];
+}> = [
+  { key: "permSearch", tools: ["search", "read_url", "browse"] },
+  { key: "permDraw", tools: ["draw", "diagram", "send_image"] },
+  { key: "permMemory", tools: ["memory"] },
+];
+
+/** 从三个老开关推出工具清单（迁移用） */
+function deriveToolsFromPerms(perms: {
+  permSearch: boolean;
+  permDraw: boolean;
+  permMemory: boolean;
+}): string[] {
+  const out: string[] = [];
+  for (const m of LEGACY_TOOL_MAP) if (perms[m.key]) out.push(...m.tools);
+  return out;
+}
+
+/**
+ * 解析库里的 tools 列。空串 = 这一档从没被新面板写过（老行），
+ * 交回 null 让调用方按老开关推一次 —— 不能把「没设过」当成「全关」。
+ * 值是一段 JSON 数组；脏数据（写坏了）同样当没设过处理，宁可推一次。
+ */
+function parseTools(raw: string): string[] | null {
+  const s = (raw || "").trim();
+  if (!s) return null;
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 工具清单一律用 JSON 数组存：空数组是「显式全关」，与「没设过」分得开 */
+function serializeTools(tools: string[]): string {
+  const seen = new Set<string>();
+  const clean = tools.filter((n) => n && !seen.has(n) && seen.add(n));
+  return JSON.stringify(clean);
+}
+
+/** 入参 → 工具清单：给了 tools 就用它；只有老开关时按老开关推一次 */
+function toolsFromInput(input: {
+  tools?: string[];
+  permSearch?: boolean;
+  permDraw?: boolean;
+  permMemory?: boolean;
+}): string[] {
+  if (input.tools !== undefined) return input.tools;
+  return deriveToolsFromPerms({
+    permSearch: input.permSearch !== false,
+    permDraw: input.permDraw !== false,
+    permMemory: input.permMemory !== false,
+  });
+}
+
+/** 三个老列由工具清单反推着写：库里的老列不再是权威，但保持自洽 */
+function legacyCols(tools: string[]): {
+  perm_search: number;
+  perm_draw: number;
+  perm_memory: number;
+} {
+  const has = (n: string) => tools.includes(n);
+  return {
+    perm_search: has("search") || has("read_url") || has("browse") ? 1 : 0,
+    perm_draw: has("draw") || has("diagram") || has("send_image") ? 1 : 0,
+    perm_memory: has("memory") ? 1 : 0,
+  };
 }
 
 /** 摘要的形状：64 位 hex。存进去的值长得像这个就是摘要代 */
@@ -114,21 +208,32 @@ function verifyStoredPassword(
   return timingSafeEqual(pw, stored);
 }
 
-/** 把一行剥成对外回显的形状（无密码） */
+/** 把一行剥成对外回显的形状（无密码、无三个老开关） */
 export function toGuestTypePublic(t: GuestTypeRow): GuestTypePublic {
-  const { password: _password, ...rest } = t;
+  const {
+    password: _password,
+    permSearch: _ps,
+    permDraw: _pd,
+    permMemory: _pm,
+    ...rest
+  } = t;
   return rest;
 }
 
 function rowToType(r: TypeRow): GuestTypeRow {
+  const legacy = {
+    permSearch: toBool(r.perm_search),
+    permDraw: toBool(r.perm_draw),
+    permMemory: toBool(r.perm_memory),
+  };
   return {
     id: r.id,
     name: r.name,
     password: r.password,
     note: r.note,
-    permSearch: toBool(r.perm_search),
-    permDraw: toBool(r.perm_draw),
-    permMemory: toBool(r.perm_memory),
+    // 老行（tools 空串）拿三个老开关推一次：迁移只做这一刻，不动库
+    tools: parseTools(r.tools) ?? deriveToolsFromPerms(legacy),
+    ...legacy,
     permNotes: toBool(r.perm_notes),
     permFiles: toBool(r.perm_files),
     permPublic: toBool(r.perm_public),
@@ -143,6 +248,7 @@ export function ensureGuestTypesSchema(sql: SqlTag): void {
        name        TEXT NOT NULL,
        password    TEXT NOT NULL,
        note        TEXT NOT NULL DEFAULT '',
+       tools       TEXT NOT NULL DEFAULT '',
        perm_search INTEGER NOT NULL DEFAULT 1,
        perm_draw   INTEGER NOT NULL DEFAULT 1,
        perm_memory INTEGER NOT NULL DEFAULT 1,
@@ -152,7 +258,13 @@ export function ensureGuestTypesSchema(sql: SqlTag): void {
        active      INTEGER NOT NULL DEFAULT 1,
        created     TEXT NOT NULL
      )`;
-  // 老库补列：长期使用者的三项专属权益是后来加的，旧表没有这三列。
+  // 老库补列：逐工具化之后新增的 tools 列（空串 = 老行，读时按老开关推一次）。
+  try {
+    sql`ALTER TABLE guest_types ADD COLUMN tools TEXT NOT NULL DEFAULT ''`;
+  } catch {
+    /* 已有该列 */
+  }
+  // 长期使用者的三项专属权益是更早加的，旧表没有这三列。
   // ADD COLUMN 遇到已存在的列会抛错 —— 一条一条试，报错就当「已经有了」。
   // 列名没法走绑定参数（插值一律是值绑定），只能三条字面量各写各的
   try {
@@ -175,7 +287,7 @@ export function ensureGuestTypesSchema(sql: SqlTag): void {
 export function listGuestTypes(sql: SqlTag): GuestTypeRow[] {
   ensureGuestTypesSchema(sql);
   return sql<TypeRow>`
-    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+    SELECT id, name, password, note, tools, perm_search, perm_draw, perm_memory,
            perm_notes, perm_files, perm_public, active, created
     FROM guest_types ORDER BY created`.map(rowToType);
 }
@@ -189,7 +301,7 @@ export function listGuestTypes(sql: SqlTag): GuestTypeRow[] {
  */
 function typeById(sql: SqlTag, id: string): GuestTypeRow | null {
   const rows = sql<TypeRow>`
-    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+    SELECT id, name, password, note, tools, perm_search, perm_draw, perm_memory,
            perm_notes, perm_files, perm_public, active, created
     FROM guest_types WHERE id = ${id} AND active = 1`;
   return rows.length ? rowToType(rows[0]) : null;
@@ -206,12 +318,16 @@ export interface GuestTypeInfo {
   id: string;
   name: string;
   note: string;
-  permSearch: boolean;
-  permDraw: boolean;
-  permMemory: boolean;
+  /** 这一档开着的对外工具（恒开的那些不在里面）；运行时只看它 */
+  tools: string[];
   permNotes: boolean;
   permFiles: boolean;
   permPublic: boolean;
+}
+
+/** 这一档能不能用某件来客工具：档位清单里开着的，或恒开的那些（天气/识图/卡片/留痕） */
+export function guestHasTool(t: GuestTypeInfo, name: string): boolean {
+  return t.tools.includes(name) || GUEST_ALWAYS_ON.includes(name);
 }
 
 export function toGuestTypeInfo(t: GuestTypeRow): GuestTypeInfo {
@@ -219,9 +335,7 @@ export function toGuestTypeInfo(t: GuestTypeRow): GuestTypeInfo {
     id: t.id,
     name: t.name,
     note: t.note,
-    permSearch: t.permSearch,
-    permDraw: t.permDraw,
-    permMemory: t.permMemory,
+    tools: t.tools,
     permNotes: t.permNotes,
     permFiles: t.permFiles,
     permPublic: t.permPublic,
@@ -230,7 +344,7 @@ export function toGuestTypeInfo(t: GuestTypeRow): GuestTypeInfo {
 
 /**
  * 档位失效时的兜底快照：票里声称的那一档查不到 / 停用了 / 查询失败，
- * 就按这一份接待 —— 六个权益全关。
+ * 就按这一份接待 —— 能关的一律全关。
  *
  * 权益的语义是「明确关掉才生效」，而这里必须反着来：票上的档位对不上号，
  * 说明管理员已经收回（或我们核实不了）这一档的约定，宁可全关也不能
@@ -242,9 +356,7 @@ export function disabledGuestTypeInfo(id: string): GuestTypeInfo {
     id,
     name: "（原类型已失效）",
     note: "",
-    permSearch: false,
-    permDraw: false,
-    permMemory: false,
+    tools: [],
     permNotes: false,
     permFiles: false,
     permPublic: false,
@@ -279,27 +391,27 @@ export async function createGuestType(
   if (!name) throw new Error("来客类型的名称不能为空");
   if (!password) throw new Error("来客类型的密码不能为空");
   await assertPasswordFree(sql, password, input.adminPw, input.gatePw);
+  const tools = toolsFromInput(input);
   const row: TypeRow = {
     id: crypto.randomUUID().slice(0, 8),
     name,
     password: await hashPassword(password),
     note: (input.note || "").trim().slice(0, 300),
-    perm_search: input.permSearch === false ? 0 : 1,
-    perm_draw: input.permDraw === false ? 0 : 1,
-    perm_memory: input.permMemory === false ? 0 : 1,
+    tools: serializeTools(tools),
+    ...legacyCols(tools),
     perm_notes: input.permNotes ? 1 : 0,
     perm_files: input.permFiles ? 1 : 0,
     perm_public: input.permPublic ? 1 : 0,
     active: 1,
     created: new Date().toISOString(),
   };
-  sql`INSERT INTO guest_types (id, name, password, note, perm_search,
+  sql`INSERT INTO guest_types (id, name, password, note, tools, perm_search,
             perm_draw, perm_memory, perm_notes, perm_files, perm_public,
             active, created)
       VALUES (${row.id}, ${row.name}, ${row.password}, ${row.note},
-              ${row.perm_search}, ${row.perm_draw}, ${row.perm_memory},
-              ${row.perm_notes}, ${row.perm_files}, ${row.perm_public},
-              ${row.active}, ${row.created})`;
+              ${row.tools}, ${row.perm_search}, ${row.perm_draw},
+              ${row.perm_memory}, ${row.perm_notes}, ${row.perm_files},
+              ${row.perm_public}, ${row.active}, ${row.created})`;
   return rowToType(row);
 }
 
@@ -329,6 +441,22 @@ export async function updateGuestType(
       password = nextHash;
     }
   }
+  // 工具清单：给了 tools 就整份换掉；只有老开关时按老开关重推一遍；
+  // 两样都没给，就沿用这一档现在的（老行会先经 rowToType 推平）
+  const legacyTouched =
+    patch.permSearch !== undefined ||
+    patch.permDraw !== undefined ||
+    patch.permMemory !== undefined;
+  const tools =
+    patch.tools !== undefined
+      ? patch.tools
+      : legacyTouched
+        ? deriveToolsFromPerms({
+            permSearch: patch.permSearch ?? cur.permSearch,
+            permDraw: patch.permDraw ?? cur.permDraw,
+            permMemory: patch.permMemory ?? cur.permMemory,
+          })
+        : cur.tools;
   const row: TypeRow = {
     id: cur.id,
     name,
@@ -337,20 +465,8 @@ export async function updateGuestType(
       patch.note === undefined
         ? cur.note
         : String(patch.note).trim().slice(0, 300),
-    perm_search:
-      patch.permSearch === undefined
-        ? cur.permSearch
-        : patch.permSearch
-          ? 1
-          : 0,
-    perm_draw:
-      patch.permDraw === undefined ? cur.permDraw : patch.permDraw ? 1 : 0,
-    perm_memory:
-      patch.permMemory === undefined
-        ? cur.permMemory
-        : patch.permMemory
-          ? 1
-          : 0,
+    tools: serializeTools(tools),
+    ...legacyCols(tools),
     perm_notes:
       patch.permNotes === undefined ? cur.permNotes : patch.permNotes ? 1 : 0,
     perm_files:
@@ -365,7 +481,8 @@ export async function updateGuestType(
     created: cur.created,
   };
   sql`UPDATE guest_types SET name = ${row.name}, password = ${row.password},
-        note = ${row.note}, perm_search = ${row.perm_search},
+        note = ${row.note}, tools = ${row.tools},
+        perm_search = ${row.perm_search},
         perm_draw = ${row.perm_draw}, perm_memory = ${row.perm_memory},
         perm_notes = ${row.perm_notes}, perm_files = ${row.perm_files},
         perm_public = ${row.perm_public}, active = ${row.active}
@@ -396,7 +513,7 @@ export async function findGuestTypeByPassword(
   if (gatePw && timingSafeEqual(pw, gatePw)) return null;
   ensureGuestTypesSchema(sql);
   const rows = sql<TypeRow>`
-    SELECT id, name, password, note, perm_search, perm_draw, perm_memory,
+    SELECT id, name, password, note, tools, perm_search, perm_draw, perm_memory,
            perm_notes, perm_files, perm_public, active, created
     FROM guest_types WHERE active = 1 ORDER BY created`;
   const pwHash = await hashPassword(pw);

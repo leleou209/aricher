@@ -17,11 +17,13 @@ import { Icon, type IconName } from "./Icons";
 import {
   ContactPanel,
   FilePanel,
+  GuestPermsPanel,
   GuestTypesPanel,
   LedgerPanel,
   MemoryPanel,
   ModelConfigsPanel,
   PromptPanel,
+  RecapGuidePanel,
   QuotaPanel,
   ReminderPanel,
   SelfPanel,
@@ -29,6 +31,7 @@ import {
   SkillPanel,
   SearchConfigsPanel,
   TaskPanel,
+  ToolGuidePanel,
   TtsConfigsPanel,
   VoicePanel,
   VisitorsPanel,
@@ -758,6 +761,7 @@ const GROUPS: Array<{
     items: [
       { key: "visitors", label: "来客", icon: "user", admin: true },
       { key: "guestTypes", label: "来客类型", icon: "bookmark", admin: true },
+      { key: "guestPerms", label: "来客权限管理", icon: "check", admin: true },
     ],
   },
   {
@@ -773,6 +777,8 @@ const GROUPS: Array<{
     title: "守则",
     items: [
       { key: "prompt", label: "工作守则", icon: "edit", admin: true },
+      { key: "toolPrompt", label: "工具守则", icon: "code", admin: true },
+      { key: "recapPrompt", label: "回想守则", icon: "clock", admin: true },
       { key: "self", label: "自我认知", icon: "compass", admin: true },
     ],
   },
@@ -813,7 +819,11 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
   },
   guestTypes: {
     title: "来客类型",
-    desc: "给不同的口令配不同的权限：各自独立的房间与记忆",
+    desc: "一个口令一类来客：名字、口令与接待说明 —— 能用哪些工具去「来客权限管理」",
+  },
+  guestPerms: {
+    title: "来客权限管理",
+    desc: "各档 × 各工具：逐件勾这一档能用什么，恒开的单独标出来",
   },
   modelConfigs: {
     title: "模型配置",
@@ -843,6 +853,14 @@ const SECTION_META: Record<SettingsKey, { title: string; desc: string }> = {
   prompt: {
     title: "工作守则",
     desc: "ericher 的第一人称行为底稿，改完即刻生效",
+  },
+  toolPrompt: {
+    title: "工具守则",
+    desc: "一件工具一格：手里有哪些工具、什么话该用哪一件 —— 主人/来客两套分开改",
+  },
+  recapPrompt: {
+    title: "回想守则",
+    desc: "没人说话半小时后，她回头整理这场对话时读的提示词（默认出工作纪要，不带情绪）",
   },
   self: { title: "自我认知", desc: "ericher 对自己的理解，以及更新日志" },
   voice: { title: "朗读嗓音", desc: "ericher 念给你听时用的是哪副嗓子" },
@@ -1488,6 +1506,12 @@ export function SettingsPage({
               </div>
             )}
 
+            {section === "guestPerms" && (
+              <div className="settings-card">
+                <GuestPermsPanel />
+              </div>
+            )}
+
             {section === "modelConfigs" && (
               <div className="settings-card">
                 <ModelConfigsPanel />
@@ -1540,6 +1564,18 @@ export function SettingsPage({
             {section === "prompt" && (
               <div className="settings-card">
                 <PromptPanel state={state} patch={patch} />
+              </div>
+            )}
+
+            {section === "toolPrompt" && (
+              <div className="settings-card">
+                <ToolGuidePanel state={state} patch={patch} />
+              </div>
+            )}
+
+            {section === "recapPrompt" && (
+              <div className="settings-card">
+                <RecapGuidePanel state={state} patch={patch} />
               </div>
             )}
 

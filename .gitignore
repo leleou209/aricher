@@ -9,3 +9,5 @@ dist/
 worker-configuration.d.ts
 .DS_Store
 .trae/
+# 本地模拟件：只在开发机跑，绝不进版本库（发布清单取 git ls-files，因此也不会被推上开源仓）
+sim/

@@ -65,6 +65,61 @@
   color: var(--yuzhe-ink);
 }
 
+/* 看图的画布：铺满遮罩剩下的地方，图超出就裁掉 —— 缩放和平移都在这层里发生。
+   touch-action: none 是给触屏的：不关掉浏览器自己的手势，一指拖动会变成滚页面，
+   捏合会被浏览器抢去当页面缩放，我们这层的 pointermove 根本收不到。
+   里面那一层是 absolute 的，所以这里不需要 flex —— 位置全靠 translate 算。 */
+.lightbox-view {
+  position: relative;
+  align-self: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+  animation: rise-in 0.18s ease-out;
+}
+
+.lightbox-view:active {
+  cursor: grabbing;
+}
+
+/* 承载图的那一层：只被挪动，不被缩放 —— 图多大由里面那层的宽度说了算
+   （见 Lightbox.tsx：缩放直接改宽度，矢量才会按目标尺寸重画，长图放大才不糊）。
+   absolute + 左上角对齐是给位移一个固定原点：位移公式需要知道「图左上角在哪」，
+   而 margin: auto 那套居中/靠上是布局算出来的结果，算不到 ——
+   现在居中与贴边的夹取由 clampView 负责。 */
+.lightbox-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+/* 带百分比的按钮：比图标宽一点，数字才不挤 */
+.lightbox-pct {
+  flex: none;
+  min-width: 44px;
+  height: 28px;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--yuzhe-r-s);
+  background: transparent;
+  color: var(--yuzhe-ink-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.lightbox-pct:hover {
+  background: var(--yuzhe-bg-hover);
+  color: var(--yuzhe-ink);
+}
+
 /* 透明 PNG 也落在一张白纸上，别让遮罩透出来 */
 .lightbox-img {
   display: block;
@@ -73,21 +128,55 @@
   background: var(--yuzhe-surface);
   border-radius: var(--yuzhe-r-m);
   box-shadow: var(--yuzhe-shadow-pop);
-  animation: rise-in 0.18s ease-out;
 }
 
-/* 内联注入的 mermaid 大图：给个确定的宽，svg 的 width=100% 才不会塌成 0 */
+/* 量出固有尺寸之后，大小由「固有宽 × 倍数」说了算 —— 上面那两条兜底限制得让开，
+   不然放到 8 倍也被 90vw 按住。没量出来之前它们负责别让图顶破屏幕。 */
+.lightbox-fit {
+  max-width: none;
+  max-height: none;
+}
+
+/* 内联注入的 mermaid 大图。这里既不自己开滚动条、也不卡高度 —— 卡高度会把又高又瘦的
+   流程图按比例缩进一个矮框里（宽度除以七，成了一条），超出的部分交给画布裁。
+
+   width 只是个「量之前」的兜底：图刚注入的那一拍还不知道固有尺寸，先给个宽度让 svg
+   的 width=100% 不至于塌成 0；量到 viewBox 之后由行内样式接管（固有宽 × 倍数）。
+   所以这里不许有 padding —— 宽度得正好等于「图有多宽」，多一圈内边距，
+   光标锚点就会差那几像素。
+
+   max-height / max-width 必须在这里显式松开：上面 .lightbox-img 那两条是给位图的
+   （一张照片不该顶破屏幕），但内联的流程图比一屏长得多 —— 纸的高度被卡在 85vh，
+   图却照旧往下长，于是「纸」只盖住开头那一屏，再往下拖就是遮罩的暗底，深色的连线
+   落在暗底上直接看不见了（节点自己有浅色填充，反倒还在，看着就像「背景莫名断了」）。
+   纸必须跟着图一起长到头。 */
 .lightbox-svg {
   width: min(86vw, 1400px);
-  max-height: 85vh;
-  overflow: auto;
-  padding: 8px 12px;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
 }
 
 .lightbox-svg svg {
+  display: block;
   width: 100%;
   height: auto;
-  max-height: 82vh;
+}
+
+/* 量到固有尺寸之后，图的宽由「固有宽 × 倍数」说了算 —— 得把 svg 自己那条
+   max-width 让开。mermaid 会在根 svg 上揣一条行内 style="max-width: 1729px"
+   （等于固有宽），行内样式压过样式表，于是倍数一过 100% 就顶住不长了：
+   外面那层 div 还在变宽，图却纹丝不动，看着像放大失灵。 */
+.lightbox-fit svg {
+  max-width: none !important;
+}
+
+/* 内联验收连续塌缩时的一记急救：mermaid 的 svg 自带 max-width，又挂着 width=100%，
+   在某些容器里会算成 0 宽 —— 这里用 !important 把宽度钉死，让它立起来 */
+.lightbox-svg-force svg {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
 }
 
 /* 没取回来时的说明卡：地址可能很长，得能断行 */

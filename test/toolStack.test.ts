@@ -14,7 +14,8 @@ import {
   buildToolStack,
   buildTools,
 } from "../src/tools/index";
-import { OWNER_TOOL_GUIDE } from "../src/agent/prompt";
+import { toolGuide } from "../src/agent/prompt";
+import { OWNER_TOOL_NAMES } from "../src/agent/toolGroups";
 import type { ToolCtx } from "../src/tools/types";
 
 const boom = () => {
@@ -106,11 +107,13 @@ describe("工具分层契约", () => {
     expect(promotedIn.length).toBeLessThanOrEqual(PROMOTE_CAP);
   });
 
-  it("索引契约：主人间每个工具的名字都写在 OWNER_TOOL_GUIDE 里", () => {
-    // 索引是手写的清单，工具是代码长出来的——两边靠这条测试对齐。
-    // 新工具进来忘写索引，模型就永远不知道它存在；这里当场炸给你看。
+  it("索引契约：主人间的名册与工具箱一一对齐，且每件都写进工具说明", () => {
+    // 名册（toolGroups.ts 的 TOOLS）是唯一的一份，工具箱是代码长出来的 ——
+    // 两边靠这条测试对齐。新工具进来忘了登记，模型就永远不知道它存在；这里当场炸。
     const all = keysOf(buildTools(mockCtx()));
-    const missing = all.filter((n) => !OWNER_TOOL_GUIDE.includes(n));
+    expect([...OWNER_TOOL_NAMES].sort()).toEqual(all);
+    const guide = toolGuide({ guest: false });
+    const missing = all.filter((n) => !guide.includes(n));
     expect(missing).toEqual([]);
   });
 });

@@ -25,6 +25,7 @@ import {
   updateGuestType,
 } from "../src/agent/guestTypes";
 import { INITIAL_STATE, type SqlTag } from "../src/agent/state";
+import { GUEST_TOGGLABLE_TOOLS } from "../src/agent/toolGroups";
 import { buildTools } from "../src/tools";
 import type { ToolCtx } from "../src/tools/types";
 
@@ -37,6 +38,7 @@ function fakeDb() {
     name: string;
     password: string;
     note: string;
+    tools: string;
     perm_search: number;
     perm_draw: number;
     perm_memory: number;
@@ -61,6 +63,7 @@ function fakeDb() {
         name,
         password,
         note,
+        tools,
         ps,
         pd,
         pm,
@@ -70,6 +73,7 @@ function fakeDb() {
         active,
         created,
       ] = values as [
+        string,
         string,
         string,
         string,
@@ -88,6 +92,7 @@ function fakeDb() {
         name,
         password,
         note,
+        tools,
         perm_search: Number(ps),
         perm_draw: Number(pd),
         perm_memory: Number(pm),
@@ -101,8 +106,9 @@ function fakeDb() {
     }
 
     if (sql.startsWith("update guest_types set")) {
-      const [name, password, note, ps, pd, pm, pn, pf, pp, active, id] =
+      const [name, password, note, tools, ps, pd, pm, pn, pf, pp, active, id] =
         values as [
+          string,
           string,
           string,
           string,
@@ -121,6 +127,7 @@ function fakeDb() {
         name,
         password,
         note,
+        tools,
         perm_search: Number(ps),
         perm_draw: Number(pd),
         perm_memory: Number(pm),
@@ -192,6 +199,39 @@ describe("guest_types 增删改查", () => {
     expect(t.permSearch).toBe(false);
     expect(t.permDraw).toBe(true);
     expect(t.permMemory).toBe(false);
+  });
+
+  it("逐工具清单：给了 tools 就整份用它，空数组是「显式全关」，老开关跟着反推", async () => {
+    const { db } = fakeDb();
+    const t = await createGuestType(db, {
+      name: "只画画",
+      password: "p1",
+      tools: ["draw"],
+      ...ENV_PW,
+    });
+    expect(t.tools).toEqual(["draw"]);
+    // 老开关不再是权威，但保持自洽（别的调用方还在读）
+    expect(t.permSearch).toBe(false);
+    expect(t.permDraw).toBe(true);
+    const off = await updateGuestType(db, t.id, { tools: [], ...ENV_PW });
+    expect(off?.tools).toEqual([]);
+    expect(off?.permDraw).toBe(false);
+  });
+
+  it("老行（tools 空串）按三个老开关推平一次 —— 不把「没设过」当成全关", async () => {
+    const { db, rows } = fakeDb();
+    const t = await createGuestType(db, {
+      name: "老档",
+      password: "p1",
+      ...ENV_PW,
+    });
+    // 模拟逐工具化之前的存量行：没有 tools，只有老开关
+    rows[0].tools = "";
+    rows[0].perm_search = 0;
+    const back = listGuestTypes(db).find((x) => x.id === t.id)!;
+    expect(back.tools).not.toContain("search");
+    expect(back.tools).toContain("draw");
+    expect(back.tools).toContain("memory");
   });
 
   it("改一档：字段缺省不动，active 能停用，名称与说明能改", async () => {
@@ -384,9 +424,8 @@ describe("门口验密码", () => {
       id: t.id,
       name: "合作方",
       note: "",
-      permSearch: true,
-      permDraw: true,
-      permMemory: true,
+      // 三个老开关缺省全开 → 推平成可开关的来客工具全选（恒开的那些不在这里）
+      tools: [...GUEST_TOGGLABLE_TOOLS],
       // 三项长期权益建档时缺省关：没有持久身份谈不上私人空间
       permNotes: false,
       permFiles: false,
@@ -473,15 +512,13 @@ describe("按档位过滤工具", () => {
     expect(names).toContain("visitor_log");
   });
 
-  it("三个开关全关：对应工具组消失，visitor_log 与不设开关的 weather/view_image 还在", () => {
+  it("可开关的工具全关：对应工具消失，visitor_log 与不设开关的 weather/view_image 还在", () => {
     const names = namesOf(
       toolCtx({
         id: "t1",
         name: "受限档",
         note: "",
-        permSearch: false,
-        permDraw: false,
-        permMemory: false,
+        tools: [],
         permNotes: false,
         permFiles: false,
         permPublic: false,
@@ -497,12 +534,10 @@ describe("按档位过滤工具", () => {
     expect(names).toContain("view_image");
   });
 
-  it("失效兜底快照（票上的档位查不到/查询失败时落的这份）：六个权益全关，工具层跟着收干净", () => {
+  it("失效兜底快照（票上的档位查不到/查询失败时落的这份）：工具清单一律全关，工具层跟着收干净", () => {
     const stub = disabledGuestTypeInfo("t-gone");
     // 兜底本身就该是全关 —— 核实不了的一档不能当成「没有约定」放行
-    expect(stub.permSearch).toBe(false);
-    expect(stub.permDraw).toBe(false);
-    expect(stub.permMemory).toBe(false);
+    expect(stub.tools).toEqual([]);
     expect(stub.permNotes).toBe(false);
     expect(stub.permFiles).toBe(false);
     expect(stub.permPublic).toBe(false);
@@ -520,9 +555,7 @@ describe("按档位过滤工具", () => {
         id: "t2",
         name: "只禁网",
         note: "",
-        permSearch: false,
-        permDraw: true,
-        permMemory: true,
+        tools: ["draw", "diagram", "send_image", "memory"],
         permNotes: false,
         permFiles: false,
         permPublic: false,
@@ -540,9 +573,7 @@ describe("按档位过滤工具", () => {
           id: "t3",
           name: "x",
           note: "",
-          permSearch: false,
-          permDraw: false,
-          permMemory: false,
+          tools: [],
           permNotes: false,
           permFiles: false,
           permPublic: false,

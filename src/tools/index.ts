@@ -27,44 +27,20 @@ import { visionTools } from "./vision";
 import { visitorLogTools } from "./visitor";
 import { weatherTools } from "./weather";
 import { gatewayTools, type GatewayCallbacks } from "./gateway";
+import {
+  DEFERRED_TOOLS,
+  RESIDENT_TOOLS,
+  guestEnabledTools,
+} from "../agent/toolGroups";
+
+// 常驻/渐进的名单归 toolGroups.ts 统一持有，但别的模块一直从 "../tools" 拿 ——
+// 在这里转出去，名册不分家，调用方也不用改。
+export { DEFERRED_TOOLS, RESIDENT_TOOLS };
 
 /**
- * 常驻工具：模型直接调，schema 全量在场。
- * 入选标准只有三条硬的：
- *   - 靠 toModelOutput 回传媒体的（draw、view_image）——网关只回字符串，图会丢；
- *   - 对话关键件（search、read_url、ask）——多一跳网关，卡壳的代价是整段对话；
- *   - 小到不值得省的（weather）。
+ * 常驻 / 渐进的分层、以及来客能用哪些工具，名册都在 src/agent/toolGroups.ts。
+ * 这里只留「怎么组装」—— 名册分家就会和提示词里写的对不上号。
  */
-export const RESIDENT_TOOLS = [
-  "search",
-  "read_url",
-  "ask",
-  "view_image",
-  "draw",
-  "weather",
-] as const;
-
-/** 渐进式工具：schema 不进请求，经 call_tool 调，用熟了转正。 */
-export const DEFERRED_TOOLS = [
-  "memory",
-  "note",
-  "task",
-  "remind",
-  "recall",
-  "files",
-  "diagram",
-  "send_image",
-  "openSession",
-  "feedback",
-  "skill",
-  "self",
-  "stats",
-  "organize",
-  "set_think_mode",
-  "session_memo",
-  "browse",
-  "artifact",
-] as const;
 
 /** 转正常驻的上限：转满 8 个就不再转，索引照样兜底 */
 export const PROMOTE_CAP = 8;
@@ -106,20 +82,25 @@ export function buildToolStack(
 export type { ToolCtx } from "./types";
 
 export function buildTools(ctx: ToolCtx): ToolSet {
-  // 多档来客类型：三个 perm 开关决定来客那间注册哪些对外工具组。
-  // 只对来客生效，主人那间不受影响；没带 guestType（普通来客票、老 state）
-  // 一律视为全开 —— 开关是「明确关掉才生效」的语义，缺省不能反着解释成全关。
-  const gt = ctx.guestType;
-  // 天气/识图不设开关（它们不出去网、也不留东西），检索/画画/记忆各自跟着档位走
-  const outward: ToolSet = {
-    ...(ctx.guest && gt?.permSearch === false ? {} : searchTools(ctx)),
-    ...weatherTools(),
-    ...visionTools(ctx),
-    ...(ctx.guest && gt?.permDraw === false ? {} : drawTools(ctx)),
-    // 卡片对两间都开：给来客出清单/对比表正是接待的活，管理员自己也用得上。
-    // 安全靠渲染端的 sandbox iframe + 响应头 CSP，不靠「不给工具」
-    ...artifactTools(ctx),
-  };
+  // 多档来客类型：档位给的启用清单决定来客那间注册哪些对外工具。
+  // 只对来客生效，主人那间不受影响；没带 guestType / 没带清单（普通来客票、
+  // 老 state）一律视为全开 —— 开关是「明确关掉才生效」的语义，缺省不能
+  // 反着解释成全关（见 toolGroups.ts 的 guestEnabledTools）。
+  const enabled = ctx.guest
+    ? new Set(guestEnabledTools(ctx.guestType?.tools))
+    : null;
+  const allow = (n: string) => !enabled || enabled.has(n);
+  // 卡片对两间都开：给来客出清单/对比表正是接待的活，管理员自己也用得上。
+  // 安全靠渲染端的 sandbox iframe + 响应头 CSP，不靠「不给工具」
+  const outward: ToolSet = Object.fromEntries(
+    Object.entries({
+      ...searchTools(ctx),
+      ...weatherTools(),
+      ...visionTools(ctx),
+      ...drawTools(ctx),
+      ...artifactTools(ctx),
+    }).filter(([n]) => allow(n)),
+  ) as ToolSet;
   // 来客到此为止：管理员自己的记忆、任务、提醒、文件都不给他碰 ——
   // 给了他既等于泄露，也等于让他替管理员做决定。
   // 唯一的例外是记忆，而且是「受限读」的那一半：
@@ -130,7 +111,7 @@ export function buildTools(ctx: ToolCtx): ToolSet {
   if (ctx.guest)
     return {
       ...outward,
-      ...(gt?.permMemory === false ? {} : guestMemoryTools(ctx)),
+      ...(allow("memory") ? guestMemoryTools(ctx) : {}),
       ...visitorLogTools(ctx),
     };
 

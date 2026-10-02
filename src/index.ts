@@ -29,6 +29,7 @@ import { compareSemver } from "./version";
 export { CoworkAgent } from "./agent/cowork";
 
 import { DEFAULT_BASE_PROMPT } from "./agent/prompt";
+import { DEFAULT_RECAP_PROMPT } from "./agent/recap";
 import { analyzeUpload, attachBlock } from "./agent/attach";
 import {
   FOLDER_KEEP,
@@ -154,6 +155,15 @@ function agentNameInPath(pathname: string): string | null {
   return seg[0] === "agents" && seg.length >= 3
     ? decodeURIComponent(seg[2])
     : null;
+}
+
+/**
+ * 面板传上来的来客工具清单。不是数组就当作没传（老客户端只传三个开关，
+ * 由 guestTypes.ts 推平一次）；空数组是「显式全关」，与没传分得开。
+ */
+function parseToolList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.filter((x): x is string => typeof x === "string");
 }
 
 // ── 登录限速（isolate 内存态，够挡住暴力猜密码） ──────────
@@ -1049,6 +1059,8 @@ async function handleApi(
             name: body.name,
             password: body.password,
             note: typeof body.note === "string" ? body.note : undefined,
+            // 逐工具权益：面板按件传；老客户端只传三个开关时由 guestTypes.ts 推平一次
+            tools: parseToolList(body.tools),
             permSearch:
               typeof body.permSearch === "boolean"
                 ? body.permSearch
@@ -1058,6 +1070,14 @@ async function handleApi(
             permMemory:
               typeof body.permMemory === "boolean"
                 ? body.permMemory
+                : undefined,
+            permNotes:
+              typeof body.permNotes === "boolean" ? body.permNotes : undefined,
+            permFiles:
+              typeof body.permFiles === "boolean" ? body.permFiles : undefined,
+            permPublic:
+              typeof body.permPublic === "boolean"
+                ? body.permPublic
                 : undefined,
           }),
         ),
@@ -1079,6 +1099,7 @@ async function handleApi(
             password:
               typeof body.password === "string" ? body.password : undefined,
             note: typeof body.note === "string" ? body.note : undefined,
+            tools: parseToolList(body.tools),
             permSearch:
               typeof body.permSearch === "boolean"
                 ? body.permSearch
@@ -1088,6 +1109,14 @@ async function handleApi(
             permMemory:
               typeof body.permMemory === "boolean"
                 ? body.permMemory
+                : undefined,
+            permNotes:
+              typeof body.permNotes === "boolean" ? body.permNotes : undefined,
+            permFiles:
+              typeof body.permFiles === "boolean" ? body.permFiles : undefined,
+            permPublic:
+              typeof body.permPublic === "boolean"
+                ? body.permPublic
                 : undefined,
             active: typeof body.active === "boolean" ? body.active : undefined,
           }),
@@ -1515,9 +1544,21 @@ async function handleApi(
     }
   }
 
-  // 人格提示词的出厂默认值，供管理员面板"恢复默认"用
+  // 人设与回想两份提示词的出厂默认值，供管理员面板「恢复默认」用。
+  // 工具那一份不在这里 —— 它拆成了逐工具的稿子，出厂稿随名册走（见 /api/tool-groups）。
   if (p === "/api/prompt" && m === "GET")
-    return Response.json({ ok: true, data: DEFAULT_BASE_PROMPT });
+    return Response.json({
+      ok: true,
+      data: {
+        base: DEFAULT_BASE_PROMPT,
+        recap: DEFAULT_RECAP_PROMPT,
+      },
+    });
+
+  // 工具守则面板：组/工具名册 + 两侧（主人/来客）的出厂稿与当前自定义。
+  // 形状容纳未来的 MCP 工具：多几件工具而已，前端不用改。
+  if (p === "/api/tool-groups" && m === "GET")
+    return readState(Promise.resolve(agent.toolGroupsCatalog()));
 
   // ── 会话：元信息与消息都存在 DO 里（不再是 R2 的一份标题索引）──
   if (p === "/api/sessions" && m === "GET")
@@ -2205,7 +2246,11 @@ async function handleApi(
   // 老客户端不带 body 也不出错（照旧打断人屋那场）
   if (p === "/api/stop" && m === "POST") {
     const body = (await req.json().catch(() => ({}))) as { room?: unknown };
-    return readState(agentStub(env, targetRoom(body.room)).stopGenerating());
+    const room = targetRoom(body.room);
+    // 谁按的「停」要留痕：轮次被叫停在界面上只剩一个「中断」，
+    // 分不清是 Esc、停止按钮，还是哪条路径误触 —— 和 [stream] 那行对上时间就能定性
+    console.warn("[stop] 收到打断请求", { room });
+    return readState(agentStub(env, room).stopGenerating());
   }
   if (p === "/api/clear" && m === "POST") {
     await agent.resetActiveSession();

@@ -166,6 +166,7 @@ import {
   toGuestTypePublic,
   updateGuestType as updateGuestTypeRow,
   disabledGuestTypeInfo,
+  guestHasTool,
   type GuestTypeInfo,
   type GuestTypeInput,
   type GuestTypePatch,
@@ -283,6 +284,13 @@ import {
   stripToolGuide,
   toolGuide,
 } from "./prompt";
+import {
+  GUEST_TOGGLABLE_TOOLS,
+  guestEnabledTools,
+  toolCatalog,
+  type ToolCatalog,
+  type ToolSideGuide,
+} from "./toolGroups";
 import { titleSystem, tidyTitle, titlePrompt } from "./title";
 import {
   installMigration,
@@ -734,9 +742,8 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
         id: COMMON_TYPE_ID,
         name: "通用来客",
         note: "",
-        permSearch: true,
-        permDraw: true,
-        permMemory: true,
+        // 内置通用档全开：能单独开关的都开上，恒开的那些本来就不在清单里
+        tools: [...GUEST_TOGGLABLE_TOOLS],
         permNotes: true,
         permFiles: true,
         permPublic: true,
@@ -781,7 +788,7 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       const typeId = input.typeId || this.state.guestTypeId || "";
       if (!typeId) return null;
       const fresh = await this.currentGuestType(typeId);
-      if (!fresh.permMemory) return null;
+      if (!guestHasTool(fresh, "memory")) return null;
     }
     ensureMemorySchema(this.db);
     const tags = input.tags || [];
@@ -906,6 +913,31 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     // 身份弹层每次展开都读它，缺了这一格就会在 undefined 上渲染
     if (typeof this.state.adminBio !== "string")
       this.patchState({ adminBio: "" });
+    // 工具提示词那一组是后加的：老实例补成空 = 用 toolGroups.ts 的出厂稿。
+    // 旧的整块 toolPrompt 已在 dropLegacyFields 里摘掉（逐工具化之后它没人读了）。
+    if (typeof this.state.toolStyle !== "string")
+      this.patchState({ toolStyle: "" });
+    if (typeof this.state.guestToolStyle !== "string")
+      this.patchState({ guestToolStyle: "" });
+    if (!this.state.toolPrompts || typeof this.state.toolPrompts !== "object")
+      this.patchState({ toolPrompts: {} });
+    if (
+      !this.state.toolGroupNotes ||
+      typeof this.state.toolGroupNotes !== "object"
+    )
+      this.patchState({ toolGroupNotes: {} });
+    if (
+      !this.state.guestToolPrompts ||
+      typeof this.state.guestToolPrompts !== "object"
+    )
+      this.patchState({ guestToolPrompts: {} });
+    if (
+      !this.state.guestToolGroupNotes ||
+      typeof this.state.guestToolGroupNotes !== "object"
+    )
+      this.patchState({ guestToolGroupNotes: {} });
+    if (typeof this.state.recapPrompt !== "string")
+      this.patchState({ recapPrompt: "" });
     // 提问卡这一格也是后加的：老实例里没有，补成空数组 ——
     // 否则 ask 工具第一次执行就会在 undefined 上炸掉
     if (!Array.isArray(this.state.asks)) this.patchState({ asks: [] });
@@ -1449,15 +1481,32 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
           type: string;
           state?: string;
           errorText?: string;
+          input?: unknown;
         };
         const isTool =
           part.type.startsWith("tool-") || part.type === "dynamic-tool";
-        if (!isTool || !part.state || !dangling.has(part.state)) return p;
+        if (!isTool || !part.state) return p;
+        const hasInput = !!part.input && typeof part.input === "object";
+        // 两件事都要管：
+        //   1) 悬空的调用（参数还在流里 / 已到齐但没跑）—— 补成诚实的失败；
+        //   2) 早就补过、当时却没补 input 的旧账 —— 老会话里已经躺着这种记录，
+        //      不修这一场永远发不出去，改完还是「没用」。
+        const heal = dangling.has(part.state);
+        const repairInput = part.state === "output-error" && !hasInput;
+        if (!heal && !repairInput) return p;
         msgChanged = true;
+        // 参数没到齐就被掐断的调用，input 是空的 —— 空 input 原样进历史会变成
+        // 毒药：序列化成 tool_use 时 input 字段整个消失（AI SDK 对 output-error
+        // 取 part.input ?? part.rawInput，都没有就是 undefined），严格的厂商
+        // （DeepSeek 的 /anthropic 兼容端）直接 422「missing field input」，
+        // 此后这一场每一轮都发不出去 —— 一次中断就把整场毒死，看着就像「这功能
+        // 坏透了、改了也没用」。补一个空对象：界面上照旧是红色的「出错」，
+        // 但历史里那条调用是合法的，下一轮照常发得出去
         return {
           ...(p as object),
           state: "output-error",
-          errorText: note,
+          errorText: part.errorText || note,
+          input: hasInput ? part.input : ({} as object),
         } as typeof p;
       });
       if (!msgChanged) return m;
@@ -2416,10 +2465,11 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       } catch {
         // 疑问块是锦上添花：表还没补好列之类的问题，不该让这轮说不了话
       }
-      // 档位把「记忆登记」关掉的来客：工具已经移除（tools/index.ts），自动注入
+      // 档位把「记忆」关掉的来客：工具已经移除（tools/index.ts），自动注入
       // 也一并关 —— 说明、注册、注入三处必须同一口径，不然模型看着注入块
       // 还会顺嘴承认「我记下了」，那是一条根本没落库的记忆
-      const memoryPermOff = this.state.guestType?.permMemory === false;
+      const memoryPermOff =
+        !!this.state.guestType && !guestHasTool(this.state.guestType, "memory");
       if (guest && !memoryPermOff) {
         // 来客那间走「受限读」：管理员公开过的 + 他名下的，过滤在主人那间的 SQL 里完成。
         // 主人那间没醒、或一笔都没翻到时，退回本地这一场的存底兜底 ——
@@ -2472,10 +2522,22 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     // 人设、守则、工具说明、内核这些几场对话都不变的东西放头上，
     // 每轮都换的血（摘要、检索记忆、任务、身份）压到最末 ——
     // 头上混进一个每轮都变的东西，从那儿往后整段都是白烧。
+    // 工具说明的覆盖值：主人那间读自己的三格；来客那间隔着 DO RPC 读主人存的
+    // 来客版（来客稿由管理员在主人那间改，来客房只读）。
+    const guideOverrides: ToolSideGuide = guest
+      ? await this.fetchGuestToolGuide()
+      : this.ownerGuide();
     const systemHead =
       buildBasePrompt(this.state.thinkMode, this.personaForPrompt()) +
       selfDemandBlock(this.demandForPrompt()) +
-      toolGuide(guest) +
+      toolGuide({
+        guest,
+        ...guideOverrides,
+        // 来客按这一档实际开着的工具剪一遍；主人那间不裁
+        enabled: guest
+          ? guestEnabledTools(this.state.guestType?.tools)
+          : undefined,
+      }) +
       (this.state.selfModel
         ? "\n\n## 我的内核（会随对话更新）\n" + this.state.selfModel
         : "");
@@ -2516,6 +2578,23 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     // 这一轮属于哪一场：开轮时钉死。等回答写完时人可能已经切走 ——
     // 拿那时的 activeSession 记账，这一轮的 token 会被记到另一场头上
     const turnSession = this.state.activeSession;
+
+    // 这一轮被谁叫停：aborted 的轮次没有流级错误，只剩「结果未知」一个状态字。
+    // 信号带 reason 就照抄，不带也留一行 —— 至少分得清「没被叫停」和「被叫停」
+    options?.abortSignal?.addEventListener(
+      "abort",
+      () => {
+        const why = options?.abortSignal?.reason;
+        console.warn("[stream] 轮次被叫停", {
+          session: turnSession,
+          reason:
+            why instanceof Error
+              ? `${why.name}: ${why.message}`
+              : String(why ?? "(无 reason)"),
+        });
+      },
+      { once: true },
+    );
 
     const result = streamText({
       model: resolved.model,
@@ -2559,10 +2638,27 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       onChunk: ({ chunk }) => this.thinker.observe(chunk),
       // 流级死亡（上游断流/请求被拒/桥层异常）不发事件就没了 —— 中断兜底
       // 只能看到「结果未知」，看不到为什么。在这里把真相留一行。
+      // 厂商回的正文才是死因本身：只记 message 永远只看到「Unprocessable
+      // Entity」，看不出是哪个字段被拒 —— 状态码、地址、正文一起摆出来
       onError: ({ error }) => {
+        const e = error as {
+          name?: string;
+          message?: string;
+          statusCode?: number;
+          url?: string;
+          responseBody?: unknown;
+        };
         console.error(
           "[stream] 流级错误：",
-          error instanceof Error ? `${error.name}: ${error.message}` : error,
+          `${e?.name ?? "Error"}: ${e?.message ?? String(error)}`,
+          "| status=",
+          e?.statusCode ?? "(无)",
+          "| url=",
+          e?.url ?? "(无)",
+          "| body=",
+          typeof e?.responseBody === "string"
+            ? e.responseBody.slice(0, 1500)
+            : JSON.stringify(e?.responseBody ?? null).slice(0, 1500),
         );
       },
       // 输出上限跟着生效的配置走 —— 每家厂商的墙不一样高，管理员按自己那家填。
@@ -2624,7 +2720,7 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       );
     }
     // 这里只说「现在是谁在跟我说话、这间屋子里怎么待人」。手上有什么工具是另一件事，
-    // 那份清单在 GUEST_TOOL_GUIDE 里按房间给 —— 两件事混着写，就会各说各的。
+    // 那份清单由 toolGroups.ts 按档位剪好（见 onChatMessage 的 toolGuide）—— 两件事混着写，就会各说各的。
     //
     // 这一段必须把「打听」和「带话」分开写。只写「话题碰到管理员的私事就收」是不行的：
     // 朋友托她转交一句意见，话里几乎必然提到管理员 —— 只有前半句，她连想帮忙的人
@@ -2651,9 +2747,14 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
       if (gt.note.trim()) block += `\n${gt.note.trim()}`;
       block += "\n";
       const off: string[] = [];
-      if (!gt.permSearch) off.push("联网检索");
-      if (!gt.permDraw) off.push("画画");
-      if (!gt.permMemory) off.push("记忆登记");
+      // 逐工具化之后，档位是按件关的；这一行说的是「这一类活儿整片没有」。
+      // 一组里三件全关才算这片没有 —— 只关一件时提示词里本来就不列它了，
+      // 不必在这儿再说一遍。
+      const noneOf = (...names: string[]) =>
+        names.every((n) => !guestHasTool(gt, n));
+      if (noneOf("search", "read_url", "browse")) off.push("联网检索");
+      if (noneOf("draw", "diagram", "send_image")) off.push("画画");
+      if (noneOf("memory")) off.push("记忆");
       if (off.length)
         block += `这类来客没有${off.join("、")}的工具，别答应这类事。\n`;
     }
@@ -2960,7 +3061,7 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
    * 字段从 ChatState 里删掉后老实例的 blob 里还留着，这里一次性摘干净。
    */
   dropLegacyFields(): void {
-    const legacy = ["bans", "banLog", "kidLog", "contacts"];
+    const legacy = ["bans", "banLog", "kidLog", "contacts", "toolPrompt"];
     const raw = this.state as unknown as Record<string, unknown>;
     if (!legacy.some((k) => k in raw)) return;
     const next = { ...raw };
@@ -4180,6 +4281,48 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     } catch {
       return DEFAULT_DRAW_CONFIGS;
     }
+  }
+
+  /**
+   * 来客那份工具提示词的覆盖值（存在主人那间，管理员改）。RPC 暴露给来客房跨间调。
+   * 空格子照原样给（空 = 用 toolGroups.ts 的出厂稿），这里不替它填默认。
+   */
+  async getGuestToolGuide(): Promise<ToolSideGuide> {
+    return {
+      prompts: this.state.guestToolPrompts || {},
+      groupNotes: this.state.guestToolGroupNotes || {},
+      style: this.state.guestToolStyle || "",
+    };
+  }
+
+  /** 来客那间取主人房的来客工具稿：跨间一趟，取不到回落出厂稿（空覆盖） */
+  private async fetchGuestToolGuide(): Promise<ToolSideGuide> {
+    if (this.isOwnerRoom) return this.getGuestToolGuide();
+    try {
+      const owner = this.env.COWORK_AGENT.get(
+        this.env.COWORK_AGENT.idFromName(OWNER_AGENT),
+      );
+      return await owner.getGuestToolGuide();
+    } catch {
+      return { prompts: {}, groupNotes: {}, style: "" };
+    }
+  }
+
+  /** 主人那间的三格覆盖值（面板「工具守则」主人侧的当前值） */
+  private ownerGuide(): ToolSideGuide {
+    return {
+      prompts: this.state.toolPrompts || {},
+      groupNotes: this.state.toolGroupNotes || {},
+      style: this.state.toolStyle || "",
+    };
+  }
+
+  /** 面板「工具守则」：组/工具名册 + 两侧出厂稿 + 当前自定义。RPC 暴露（只主人那间有值） */
+  async toolGroupsCatalog(): Promise<ToolCatalog> {
+    return toolCatalog({
+      owner: this.ownerGuide(),
+      guest: await this.getGuestToolGuide(),
+    });
   }
 
   /** 工具与来客那间用的形状。RPC 暴露给来客房间跨间调 */

@@ -62,6 +62,26 @@ export const TOOL_META: Record<
     desc: "去以前的会话里，找回当时的原话",
     icon: "clock",
   },
+  session_memo: {
+    zh: "会话提要",
+    desc: "没人说话时，我自己回头写下的这一场提要",
+    icon: "book-open",
+  },
+  note: {
+    zh: "笔记本",
+    desc: "他的原稿成篇记下，不是我的转述",
+    icon: "edit",
+  },
+  artifact: {
+    zh: "交互卡片",
+    desc: "出一张沙箱里渲染的 HTML 卡片",
+    icon: "layers",
+  },
+  visitor_log: {
+    zh: "留痕",
+    desc: "来客在这间屋子的进门、留言与面板操作",
+    icon: "user",
+  },
   task: { zh: "任务清单", desc: "记下待办，并推进状态", icon: "check" },
   remind: { zh: "提醒", desc: "定个时间，到点我自己来开口", icon: "bell" },
   skill: { zh: "技能配方", desc: "把多步流程存成可复用的配方", icon: "layers" },

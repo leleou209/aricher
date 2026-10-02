@@ -201,7 +201,10 @@ export async function runSessionRecap(
   const ran = await agent
     .withSelfWork(async () => {
       await agent.keepAliveWhile(async () => {
-        const { system, user } = recapPrompt(agent.sessionTranscript(segment));
+        const { system, user } = buildRecapPrompt(
+          agent.sessionTranscript(segment),
+          agent.state.recapPrompt,
+        );
         const r = await generateText({
           model,
           system,
@@ -339,28 +342,38 @@ async function writeBack(
 }
 
 /**
- * 回想那一轮的提示词。
+ * 回想那一轮的默认提示词。管理员可在设置页「回想守则」里整段改掉。
  *
  * 为什么不带完整人设：这一轮是记账，不是对话。把 basePrompt 全文（含工具说明）
  * 带进来，token 全花在让她演一遍自己上。这条与咀嚼用的 digestPrompt 一脉相承。
  *
  * 「现在没人在说话」必须写明白 —— 不写的话她会照着聊天惯性提问、等回复，
  * 那两句就会变成一条没人回答的问题，挂在对话尾巴上。
+ *
+ * 口径是工程纪要，不是感想：这条线上 ericher 不担负情感化内容 —— 回想的价值
+ * 全在「把事情记进库」，心情既检索不到、也用不上。早先那句「只输出一两句
+ * 第一人称的收尾感想」要的就是情绪，模型自然往情绪上写；改成按五点出纪要。
+ * 「他默认已看到」也要写明白：不给这句，她就会把「没人接话」当成「他可能
+ * 没看到」，要么自作主张重发，要么在记录里写一句没根据的猜测。
  */
-export function recapPrompt(transcript: string): {
-  system: string;
-  user: string;
-} {
+export const DEFAULT_RECAP_PROMPT =
+  "你是 ericher。现在是安静的时段，没人在跟你说话 —— 你不是在回答谁，是自己在写工作纪要。" +
+  "他默认已经看过这一段里的每条消息；他没接话是在忙、或没打算接，不是没看到。" +
+  "下面是你和用户刚过去的一段对话。读一遍，然后做两件事：" +
+  "一是用 session_memo 把这一段记下来，按工程口径写全五点：发生了什么、我做了什么、" +
+  "现在处于什么情况、有什么需要收敛整理的、下一步大概做什么；sentiment 照实标（那是检索标签）。" +
+  "二是如果这一段里出现了值得长期记住的事（他的偏好、定下来的规矩、提到的人、还没了结的事），" +
+  "用 memory 再记一条。" +
+  "约束：不写情绪、不写感想、不做价值评判，不扯新话题，不提问，不要求回复，不复述对话原文。" +
+  "最后只输出一份简短的工作纪要，覆盖那五点，每条一句话。";
+
+export function buildRecapPrompt(
+  transcript: string,
+  custom?: string,
+): { system: string; user: string } {
+  const body = (custom || "").trim();
   return {
-    system:
-      "你是 ericher。现在是安静的时段，没人在跟你说话 —— 你不是在回答谁，是自己在回头想。" +
-      "下面是你和用户刚过去的一段对话。读一遍，然后做两件事：" +
-      "一是用 session_memo 工具把这一段记下来：聊了什么、他怎么起的头、你答的是什么、" +
-      "范围到哪儿、这一段是什么语气（sentiment 从那几个里挑最贴的一个）。" +
-      "二是如果这一段里出现了值得长期记住的事（他的偏好、定下来的规矩、提到的人、" +
-      "还没了结的事），用 memory 工具再记一条。" +
-      "约束：不扯新话题，不提问，不要求回复，不重复对话原文。" +
-      "只输出一两句第一人称的收尾感想（像自己心里的念头），不要复述过程。",
+    system: body || DEFAULT_RECAP_PROMPT,
     user: "【刚过去的这一段】\n" + transcript,
   };
 }

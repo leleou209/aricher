@@ -7,8 +7,15 @@ import {
   stripToolGuide,
   toolGuide,
 } from "../src/agent/prompt";
+import {
+  TOOLS,
+  TOOL_GROUPS,
+  guestEnabledTools,
+  styleDefault,
+  toolDefault,
+} from "../src/agent/toolGroups";
 
-// 新工具说明的标题：编号风格，与守则（1-4）、收着（5）、深度模式（6）、自定守则（7）连成一篇
+// 工具说明的标题：编号风格，与守则（1-4）、收着（5）、深度模式（6）、自定守则（7）连成一篇
 const TOOL_HEADING = "8、我能用的工具";
 // 旧版快照里工具说明的标题（分家之前的格式），stripToolGuide 仍要能认出并剥掉
 const LEGACY_HEADING = "## 我能用的工具";
@@ -16,8 +23,8 @@ const LEGACY_HEADING = "## 我能用的工具";
 describe("服务向文案边界", () => {
   it("默认守则与两份工具说明里不出现「小王」—— 他服务的是眼前的人，不点名台后的人", () => {
     expect(DEFAULT_BASE_PROMPT).not.toContain("小王");
-    expect(toolGuide(false)).not.toContain("小王");
-    expect(toolGuide(true)).not.toContain("小王");
+    expect(toolGuide({ guest: false })).not.toContain("小王");
+    expect(toolGuide({ guest: true })).not.toContain("小王");
   });
 });
 
@@ -43,69 +50,140 @@ describe("stripToolGuide", () => {
   });
 });
 
-describe("toolGuide", () => {
+describe("toolGuide：语义组 → 逐工具两层", () => {
   it("两边都从同一个标题起头：它是一份说明，不是人设的一部分", () => {
-    expect(toolGuide(false).startsWith("\n" + TOOL_HEADING)).toBe(true);
-    expect(toolGuide(true).startsWith("\n" + TOOL_HEADING)).toBe(true);
+    expect(toolGuide({ guest: false }).startsWith("\n\n" + TOOL_HEADING)).toBe(
+      true,
+    );
+    expect(toolGuide({ guest: true }).startsWith("\n\n" + TOOL_HEADING)).toBe(
+      true,
+    );
   });
 
-  it("主人那间写着任务、提醒、翻旧账、赞踩的用法，且不再有盯梢/承诺/发信", () => {
-    const owner = toolGuide(false);
-    // 索引行式：渐进式工具在说明里是「名字 —— 用途」一行一条
-    for (const t of ["recall ——", "task ——", "remind ——", "feedback ——"]) {
-      expect(owner).toContain(t);
-    }
-    // 三样已随副本裁掉：守则里写着、工具箱里没有，等于教我答应做不到的事
-    for (const t of ["watch（", "promise（", "send_email"]) {
-      expect(owner).not.toContain(t);
-    }
+  it("组按名册的序出现，组里一件一件列，常驻/渐进标清楚", () => {
+    const owner = toolGuide({ guest: false });
+    for (const g of TOOL_GROUPS) expect(owner).toContain(`【${g.label}】`);
+    // 常驻的直呼其名，渐进的得点名走网关 —— 不点明它就会直接调一个不存在的东西
+    expect(owner).toContain("- search（直接调）—— ");
+    expect(owner).toContain("- task（经 call_tool 调）—— ");
   });
 
-  it("来客那间不许出现那些工具 —— 写着却调不动，就会答应做不到的事", () => {
-    const guest = toolGuide(true);
-    for (const t of [
-      "recall（",
-      "task（",
-      "remind（",
-      "watch（",
-      "send_email",
+  it("出厂稿逐件落到位：名册里给主人写的每句都在", () => {
+    const owner = toolGuide({ guest: false });
+    for (const t of TOOLS.filter((x) => x.owner && x.ownerDefault))
+      expect(owner).toContain(t.ownerDefault);
+  });
+
+  it("主人有、来客没有的那些不向来客漏", () => {
+    const guest = toolGuide({ guest: true });
+    for (const n of [
+      "recall",
+      "session_memo",
+      "note",
+      "files",
+      "task",
+      "remind",
+      "ask",
+      "openSession",
       "self",
-      "note（",
-    ]) {
-      expect(guest).not.toContain(t);
-    }
+      "skill",
+      "stats",
+      "organize",
+      "set_think_mode",
+      "feedback",
+    ])
+      expect(guest).not.toContain(`- ${n}（`);
+    // 来客独有的留痕在
+    expect(guest).toContain("- visitor_log（");
   });
 
-  it("笔记本和记忆的分工写在主人那间：他要原稿，不是我的转述", () => {
-    const owner = toolGuide(false);
-    expect(owner).toContain("note —— 笔记本");
-    expect(owner).toContain("用 note 不是 memory");
-    // 这条是「她看得到我在翻哪一篇」在提示词里的那一半：
-    // 少了它，noteFocusBlock 注进去的那一段没人认领，她只会当背景读过去
-    expect(owner).toContain("用户正在看的笔记");
-    expect(owner).toContain("说清动了哪几处");
+  it("来客那间只列它真有的那几件", () => {
+    const guest = toolGuide({ guest: true });
+    for (const n of [
+      "search",
+      "read_url",
+      "browse",
+      "weather",
+      "view_image",
+      "draw",
+      "diagram",
+      "send_image",
+      "artifact",
+      "memory",
+      "visitor_log",
+    ])
+      expect(guest).toContain(`- ${n}（`);
+  });
+});
+
+describe("来客那间按档位剪一遍", () => {
+  it("档位关掉的工具不出现在说明里；恒开的照样在", () => {
+    const guest = toolGuide({
+      guest: true,
+      enabled: guestEnabledTools(["search"]),
+    });
+    expect(guest).toContain("- search（");
+    expect(guest).not.toContain("- draw（");
+    expect(guest).not.toContain("- memory（");
+    // 天气/识图/卡片/留痕没有关掉的路
+    expect(guest).toContain("- weather（");
+    expect(guest).toContain("- visitor_log（");
   });
 
-  it("来客那间只写它真有的那几个", () => {
-    const guest = toolGuide(true);
-    for (const t of [
-      "search（",
-      "read_url（",
-      "browse（",
-      "view_image（",
-      "draw（",
-    ]) {
-      expect(guest).toContain(t);
-    }
+  it("不给 enabled 时全列 —— 老票、老 state 的兜底", () => {
+    expect(toolGuide({ guest: true })).toContain("- memory（");
+  });
+});
+
+describe("逐工具 / 组尾 / 末栏 三处都能改", () => {
+  it("逐工具覆盖：改了 search 不牵动 draw", () => {
+    const g = toolGuide({
+      guest: false,
+      prompts: { search: "只搜官方文档。" },
+    });
+    expect(g).toContain("- search（直接调）—— 只搜官方文档。");
+    expect(g).not.toContain(toolDefault("search", false));
+    expect(g).toContain(toolDefault("draw", false));
   });
 
-  it("来客能翻公开与他名下的记忆，但翻不到就照实说", () => {
-    const guest = toolGuide(true);
-    expect(guest).toContain("memory 的 search");
-    expect(guest).toContain("whoami");
-    expect(guest).toContain("翻不到就照实说");
-    expect(guest).toContain("编出来的记忆会让他误以为真");
-    expect(guest).toContain("记忆库里翻到的");
+  it("空覆盖回落到出厂稿", () => {
+    expect(toolGuide({ guest: false, prompts: { search: "  " } })).toBe(
+      toolGuide({ guest: false }),
+    );
+    expect(toolGuide({ guest: false, style: "" })).toBe(
+      toolGuide({ guest: false }),
+    );
+  });
+
+  it("组尾覆盖替换本组那一段", () => {
+    const g = toolGuide({
+      guest: false,
+      groupNotes: { read: "本组的话：先搜再读，别顺着链接逛。" },
+    });
+    expect(g).toContain("本组的话：先搜再读，别顺着链接逛。");
+  });
+
+  it("末栏风格覆盖替换出厂那份", () => {
+    const g = toolGuide({
+      guest: false,
+      style: "调用纪律：一次一件，别乱发。",
+    });
+    expect(
+      g.startsWith("\n\n" + TOOL_HEADING + "\n调用纪律：一次一件，别乱发。"),
+    ).toBe(true);
+    expect(g).not.toContain("主动开口花的是他的注意力");
+  });
+});
+
+describe("工具使用风格该写明的两件事", () => {
+  it("主人那间：他默认已经看过我说的每条消息 —— 没人接话不等于没看到", () => {
+    expect(styleDefault(false)).toContain("默认已经看过");
+    expect(styleDefault(false)).toContain("不是没看到");
+  });
+
+  it("来客那间：以「没有哪些工具」为准，绝不编造不存在的功能", () => {
+    expect(styleDefault(true)).toContain("没有哪些工具");
+    expect(styleDefault(true)).toContain("绝不编造不存在的功能");
   });
 });
 
@@ -188,7 +266,7 @@ describe("人设与工具说明分家之后，拼出来的四段各就各位", (
   it("人设里没有工具清单，工具说明在单独一份里，中间夹着自我要求", () => {
     const base = buildBasePrompt("normal", "");
     const demand = selfDemandBlock("我想成为他不开口也敢信的那种人。");
-    const guide = toolGuide(true);
+    const guide = toolGuide({ guest: true });
     const system = base + demand + guide;
 
     expect(system.indexOf("我想成为他不开口也敢信的那种人。")).toBeGreaterThan(

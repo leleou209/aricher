@@ -16,11 +16,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { UIMessage } from "ai";
 import { generateText } from "ai";
 import {
+  DEFAULT_RECAP_PROMPT,
   RECAP_IDLE_MS,
   RECAP_RETRY_MS,
   RECAP_STAGGER_MS,
   RECAP_WINDOW,
   RECAP_TASK,
+  buildRecapPrompt,
   freshSegment,
   resyncRecaps,
   runSessionRecap,
@@ -738,5 +740,46 @@ describe("回想统一：不再有老会话豁免", () => {
     expect(stmt).toContain("from memories");
     expect(stmt).not.toContain("join sessions");
     expect(stmt).not.toContain("from sessions");
+  });
+});
+
+/**
+ * 回想提示词：口径与可覆盖。
+ *
+ * 早先那句「只输出一两句第一人称的收尾感想」要的是情绪，模型自然往情绪上写 ——
+ * 这条线不担负情感化内容，回想的价值全在「把事情记进库」。这里钉两件事：
+ * 默认出的是工作纪要（五点），以及「他默认已看到」这句不能少。
+ */
+describe("回想提示词：工程纪要口径", () => {
+  it("默认出工作纪要：发生了什么、做了什么、什么情况、收敛什么、下一步", () => {
+    const { system } = buildRecapPrompt("【对话】…");
+    for (const k of [
+      "发生了什么",
+      "我做了什么",
+      "现在处于什么情况",
+      "需要收敛整理",
+      "下一步",
+    ]) {
+      expect(system).toContain(k);
+    }
+    // 旧口径要的是感想；换成纪要之后它不该还在
+    expect(system).not.toContain("收尾感想");
+    expect(system).toContain("不写情绪");
+  });
+
+  it("写明「他默认已看到」—— 没接话不是没看到，别写成疑点", () => {
+    expect(buildRecapPrompt("x").system).toContain("默认已经看过");
+    expect(buildRecapPrompt("x").system).toContain("不是没看到");
+  });
+
+  it("对话正文永远接在 user 里，不被覆盖值顶掉", () => {
+    expect(buildRecapPrompt("某某说了什么", "自定").user).toContain(
+      "某某说了什么",
+    );
+  });
+
+  it("管理员整段覆盖生效；空覆盖回落默认", () => {
+    expect(buildRecapPrompt("x", "   ").system).toBe(DEFAULT_RECAP_PROMPT);
+    expect(buildRecapPrompt("x", "只记事实。").system).toBe("只记事实。");
   });
 });

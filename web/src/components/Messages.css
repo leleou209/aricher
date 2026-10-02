@@ -85,26 +85,18 @@
   margin-top: 10px;
 }
 
-/* 流式光标：一枚跳动的黑笔画 */
-.caret {
+/* 流式指示：一枚转圈圈。原来是会闪的竖笔画，一亮一灭太跳眼；
+   匀速转只是说「还在动」，不催人看。 */
+.live-spin {
   display: inline-block;
-  width: 2px;
-  height: 15px;
-  margin-left: 2px;
-  vertical-align: -2px;
-  background: var(--yuzhe-black);
-  animation: caret-blink 1s steps(1) infinite;
-}
-
-@keyframes caret-blink {
-  0%,
-  60% {
-    opacity: 1;
-  }
-  61%,
-  100% {
-    opacity: 0.1;
-  }
+  width: 12px;
+  height: 12px;
+  margin-left: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--yuzhe-line);
+  border-top-color: var(--yuzhe-ink-dim);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 /* 等第一句话时的三点：占住位置，「在动」这件事不能有空白 */
@@ -627,12 +619,46 @@
 }
 
 .artifact-title {
+  /* 标题本身就是放大入口：图困在 iframe 里点不着，得给个外面能点的靶子 */
+  font: inherit;
   font-weight: 500;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
   color: var(--yuzhe-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.artifact-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.artifact-zoom {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 8px;
+  border: 1px solid var(--yuzhe-line);
+  border-radius: 999px;
+  background: var(--yuzhe-surface);
+  color: var(--yuzhe-ink-dim);
+  cursor: pointer;
+}
+
+.artifact-zoom:hover:not(:disabled) {
+  color: var(--yuzhe-ink);
+  border-color: var(--yuzhe-ink-faint);
+}
+
+.artifact-zoom:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .artifact-open {

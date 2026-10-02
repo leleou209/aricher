@@ -46,13 +46,14 @@ function makeDb() {
   return { tag, rows };
 }
 
-const guestTypeInfo = (permMemory: boolean) => ({
+const guestTypeInfo = (memory: boolean) => ({
   id: "t1",
   name: "测试档",
   note: "",
-  permSearch: true,
-  permDraw: true,
-  permMemory,
+  // 只留「画」那组，记忆开关单独给 —— 用例盯的就是这一件
+  tools: memory
+    ? ["draw", "diagram", "send_image", "memory"]
+    : ["draw", "diagram", "send_image"],
   permNotes: true,
   permFiles: true,
   permPublic: true,

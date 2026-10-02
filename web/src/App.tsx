@@ -640,8 +640,12 @@ function Shell({
   // 老场留在老屋里继续活着，这就是多场并行的地基
   const [activeRoom, setActiveRoom] = useState(agentName);
   const agent = useAgent<ChatState>({ agent: "CoworkAgent", name: activeRoom });
+  // experimental_throttle：流水式刷新消息 store 会把 useSyncExternalStore 逼到同一 tick
+  // 里嵌套更新几十次，React 直接抛「Maximum update depth exceeded」——抛错打断流处理，
+  // 传输层随即 cancel，服务端被记成「用户中断」。给消息回调加 60ms 节流，把刷新压成
+  // leading+trailing 两次，既保住尾帧又不炸渲染。
   const { messages, sendMessage, status, isServerStreaming, stop, regenerate } =
-    useAgentChat({ agent });
+    useAgentChat({ agent, experimental_throttle: 60 });
   const state = agent.state ?? INITIAL_UI_STATE;
 
   const isAdmin = role === "admin";

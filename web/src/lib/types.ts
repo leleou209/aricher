@@ -201,6 +201,23 @@ export interface ChatState {
   selfDemandLog: string[];
   /** 管理员自定义的人格提示词；为空表示用内置默认 */
   basePrompt: string;
+  /**
+   * 工具守则拆成了逐工具的稿子：name → 文本（空 = 用出厂默认）。
+   * 一件工具一格，改 read_url 不影响 draw（见后端 src/agent/toolGroups.ts）。
+   */
+  toolPrompts: Record<string, string>;
+  /** 组尾的追加稿：groupId → 文本（空 = 用出厂默认） */
+  toolGroupNotes: Record<string, string>;
+  /** 末栏「工具组使用风格」的覆盖稿（空 = 用出厂默认） */
+  toolStyle: string;
+  /** 来客那间另存一份：逐工具的覆盖稿 */
+  guestToolPrompts: Record<string, string>;
+  /** 来客那间的组尾覆盖稿 */
+  guestToolGroupNotes: Record<string, string>;
+  /** 来客那间的末栏风格覆盖稿 */
+  guestToolStyle: string;
+  /** 管理员自定义的回想守则（空 = 用内置默认） */
+  recapPrompt: string;
   skills: Record<string, string[]>;
   tasks: Task[];
   /** 还摆在我眼前、没答的问题 */
@@ -277,6 +294,13 @@ export const INITIAL_UI_STATE: ChatState = {
   selfDemandVer: 0,
   selfDemandLog: [],
   basePrompt: "",
+  toolPrompts: {},
+  toolGroupNotes: {},
+  toolStyle: "",
+  guestToolPrompts: {},
+  guestToolGroupNotes: {},
+  guestToolStyle: "",
+  recapPrompt: "",
   skills: {},
   tasks: [],
   asks: [],
@@ -524,12 +548,12 @@ export interface GuestType {
   id: string;
   name: string;
   note: string;
-  /** 能不能联网检索 */
-  permSearch: boolean;
-  /** 能不能画画 */
-  permDraw: boolean;
-  /** 能不能动记忆库 */
-  permMemory: boolean;
+  /**
+   * 这一档开着的对外工具名（逐工具权益的权威）。
+   * 空数组 = 显式全关；后端对老行会按旧开关推平一次。
+   * 恒开的（天气/识图/卡片/留痕）不必写进来，后端会补上。
+   */
+  tools: string[];
   /** 长期权益：记事本（凭身份卡解锁） */
   permNotes: boolean;
   /** 长期权益：云盘上传（凭身份卡解锁） */
@@ -567,6 +591,53 @@ export interface PublicPost {
   author: string;
   content: string;
   created: string;
+}
+
+// ── 工具名册（后端 src/agent/toolGroups.ts 的镜像，走 GET /api/tool-groups）──
+//
+// 「工具守则」面板与「来客权限」页都读它：组 → 工具，两侧（主人/来客）各自的
+// 出厂稿与当前自定义。不写死在前端 —— 名册只有后端一份，写死两份必定对不上。
+
+/** 工具语义组 */
+export type ToolGroupId =
+  "read" | "visual" | "memory" | "todo" | "session" | "system";
+
+export interface ToolGroupDef {
+  id: ToolGroupId;
+  label: string;
+  /** 组标题下面的一句说明（只进界面，不进提示词） */
+  hint: string;
+}
+
+/** 面板里的一件工具 */
+export interface ToolCatalogTool {
+  name: string;
+  group: ToolGroupId;
+  /** 常驻（schema 直接挂着）还是渐进（经 call_tool 调） */
+  resident: boolean;
+  owner: boolean;
+  guest: boolean;
+  /** 来客侧能不能单独开关；false 的是恒开，不参与权限矩阵 */
+  guestTogglable: boolean;
+}
+
+/** 某一侧（主人/来客）的三格覆盖值 */
+export interface ToolSideGuide {
+  /** 逐工具的覆盖稿：name → 文本 */
+  prompts: Record<string, string>;
+  /** 组尾的追加稿：groupId → 文本 */
+  groupNotes: Record<string, string>;
+  /** 末栏「工具组使用风格」的覆盖稿 */
+  style: string;
+}
+
+export interface ToolCatalog {
+  groups: ToolGroupDef[];
+  tools: ToolCatalogTool[];
+  /** 出厂默认稿（「恢复默认」的对照） */
+  defaults: { owner: ToolSideGuide; guest: ToolSideGuide };
+  /** 当前自定义（空 = 用出厂稿） */
+  current: { owner: ToolSideGuide; guest: ToolSideGuide };
 }
 
 /** 模型服务的接口格式。同一家的 baseUrl 换个路径就能换格式（各家的备注见 presets.ts） */
@@ -664,6 +735,7 @@ export type SettingsKey =
   | "file"
   | "visitors"
   | "guestTypes"
+  | "guestPerms"
   | "modelConfigs"
   | "ttsConfigs"
   | "drawConfigs"
@@ -672,6 +744,8 @@ export type SettingsKey =
   | "remind"
   | "skills"
   | "prompt"
+  | "toolPrompt"
+  | "recapPrompt"
   | "self"
   | "voice"
   | "appearance";

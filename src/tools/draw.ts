@@ -32,6 +32,7 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { insertMemory, searchMemories } from "../agent/memory";
+import { guestHasTool } from "../agent/guestTypes";
 import type { DrawConfig, DrawTier } from "../agent/drawConfigs";
 import { usage } from "../agent/usage";
 import { sessionKey } from "../fileAccess";
@@ -345,10 +346,10 @@ export function imageKeyIn(text: string): string | null {
  * keep 是 opt-in —— 不设闸的话，画得越多记忆库越像图床，检索会被废图淹掉。
  */
 function keepMemory(ctx: ToolCtx, content: string, fileKey: string): string {
-  // 来客那档关了记忆登记：图仍留在云盘（点开就能看），但不能从这条侧路绕过
+  // 来客那档关了记忆：图仍留在云盘（点开就能看），但不能从这条侧路绕过
   // 档位把行写进记忆库 —— 档位承诺的是「不落库」，不是「少落一条」
-  if (ctx.guest && ctx.guestType && !ctx.guestType.permMemory)
-    return "\n（他这一档没开记忆登记，图只放在云盘，没有进记忆库。）";
+  if (ctx.guest && ctx.guestType && !guestHasTool(ctx.guestType, "memory"))
+    return "\n（他这一档没开记忆，图只放在云盘，没有进记忆库。）";
   try {
     const mem = insertMemory(ctx.sql, {
       type: "image",

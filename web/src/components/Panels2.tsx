@@ -5,7 +5,14 @@
 // 本文件 import 工具只走 ./PanelsShared —— 不许回头 import Panels.tsx（防循环）。
 // ─────────────────────────────────────────────────────────────
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../lib/api";
 import { speak, stopSpeaking } from "../lib/speech";
 import {
@@ -32,6 +39,8 @@ import {
   type SessionMeta,
   type Shelf,
   type Summary,
+  type ToolCatalog,
+  type ToolGroupDef,
   type TtsConfig,
   type TtsProtocol,
   type UserCard,
@@ -39,7 +48,7 @@ import {
   type VisitorEvent,
   type VisitorRoom,
 } from "../lib/types";
-import { fmtWhen, type Patch } from "./PanelsShared";
+import { fmtWhen, toolMeta, type Patch } from "./PanelsShared";
 import "./Panels.css";
 
 /**
@@ -866,52 +875,38 @@ export function SelfPanel({
   );
 }
 
-// ── 工作守则（提示词）─────────────────────────────────
+// ── 提示词（守则 / 工具守则 / 回想守则）──────────────────
 
 /**
- * 管理员可改的工作守则（ericher 的第一人称行为底稿）。`state.basePrompt` 为空时后端会回落到内置默认，
- * 所以这里展示的初值要用出厂默认值兜底，否则管理员打开面板看到的是空白，
- * 会误以为提示词丢了。
+ * 提示词编辑器：三份可改提示词共用一套交互（草稿 / 保存 / 恢复默认）。
+ *
+ * 三份都是「空串 = 用内置默认」，所以初值要用出厂默认值兜底 ——
+ * 否则管理员打开面板看到的是空白，会误以为提示词丢了。
+ * 只在外部值变化时同步草稿，避免打字打到一半被覆盖。
  */
-export function PromptPanel({
-  state,
-  patch,
+function PromptEditor({
+  rows,
+  hint,
+  current,
+  fallback,
+  onSave,
+  onReset,
 }: {
-  state: ChatState;
-  patch: Patch;
+  rows: number;
+  hint: string;
+  current: string;
+  fallback: string;
+  onSave: (text: string) => Promise<void>;
+  onReset: () => Promise<void>;
 }) {
-  // DO 的 state 是持久化 blob：老实例里没有 basePrompt 这个键，
-  // 所以这里必须兜底成 ""，否则 .trim() 会炸掉整个页面。
-  const current = state.basePrompt ?? "";
-  const [fallback, setFallback] = useState("");
-  const [draft, setDraft] = useState(current);
-  const [err, setErr] = useState("");
+  const [draft, setDraft] = useState(current || fallback);
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    api
-      .getDefaultPrompt()
-      .then(setFallback)
-      .catch((e: Error) => setErr(e.message));
-  }, []);
-
-  // 只在外部值变化时同步草稿，避免打字打到一半被覆盖
   useEffect(() => {
     setDraft(current || fallback);
   }, [current, fallback]);
 
   const custom = current.trim().length > 0;
-
-  const save = async () => {
-    await patch({ basePrompt: draft });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
-  };
-
-  const reset = async () => {
-    await patch({ basePrompt: "" });
-    setDraft(fallback);
-  };
 
   return (
     <div className="panel-body">
@@ -923,27 +918,385 @@ export function PromptPanel({
         className="field big"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        rows={18}
+        rows={rows}
       />
       <div className="row-actions">
         <button
           className="btn btn-primary btn-sm"
-          onClick={save}
+          onClick={async () => {
+            await onSave(draft);
+            setSaved(true);
+            setTimeout(() => setSaved(false), 1500);
+          }}
           disabled={draft === (current || fallback)}
         >
-          {saved ? "已保存" : "保存守则"}
+          {saved ? "已保存" : "保存"}
         </button>
         <button
           className="btn btn-ghost btn-sm"
-          onClick={reset}
+          onClick={onReset}
           disabled={!custom}
         >
           恢复默认
         </button>
       </div>
-      <p className="meta pad">改完即刻生效，下一轮对话就会带上新的工作守则。</p>
-      {err && <p className="err">{err}</p>}
+      <p className="meta pad">{hint}</p>
     </div>
+  );
+}
+
+/**
+ * 两份默认稿都在 /api/prompt 里一次取回（守则 / 回想守则）。
+ * 工具那份不在这里 —— 它拆成了逐工具的稿子，出厂稿随名册走，见 /api/tool-groups。
+ */
+function usePromptDefaults() {
+  const [defaults, setDefaults] = useState({ base: "", recap: "" });
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api
+      .getDefaultPrompt()
+      .then(setDefaults)
+      .catch((e: Error) => setErr(e.message));
+  }, []);
+  return { defaults, err };
+}
+
+/** 工作守则：ericher 的第一人称行为底稿（「我的活是什么、边界在哪」） */
+export function PromptPanel({
+  state,
+  patch,
+}: {
+  state: ChatState;
+  patch: Patch;
+}) {
+  const { defaults, err } = usePromptDefaults();
+  return (
+    <>
+      <PromptEditor
+        rows={18}
+        hint="改完即刻生效，下一轮对话就会带上新的工作守则。"
+        current={state.basePrompt ?? ""}
+        fallback={defaults.base}
+        onSave={async (text) => void (await patch({ basePrompt: text }))}
+        onReset={async () => void (await patch({ basePrompt: "" }))}
+      />
+      {err && <p className="err">{err}</p>}
+    </>
+  );
+}
+
+/**
+ * 一格稿子：草稿 + 失焦落库。
+ *
+ * 工具守则的格子有几十个，每格再摆一对「保存/恢复默认」按钮会吵得没法看，
+ * 所以改成改完移开焦点（或按 Ctrl/Cmd+Enter）即落库，右上角一个小标记说明
+ * 这一格是自定义还是出厂默认。内容没变就不打扰后端。
+ */
+function GuideField({
+  label,
+  hint,
+  value,
+  fallback,
+  rows = 2,
+  onSave,
+  onReset,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  fallback: string;
+  rows?: number;
+  onSave: (text: string) => Promise<void>;
+  onReset: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value || fallback);
+  const [saved, setSaved] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const custom = value.trim().length > 0;
+
+  useEffect(() => {
+    setDraft(value || fallback);
+  }, [value, fallback]);
+
+  // 高度自适应：内容几行就几行，不摆一个固定高度的空框
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+
+  const commit = async () => {
+    const text = draft.trim();
+    if (text === (value || fallback).trim()) return;
+    await onSave(text);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1200);
+  };
+
+  return (
+    <div className="guide-field">
+      <div className="guide-field-head">
+        <span className="guide-field-label">{label}</span>
+        {saved && <span className="meta">已保存</span>}
+        <span className="meta">{custom ? "自定义" : "默认"}</span>
+        {custom && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              await onReset();
+              setSaved(true);
+              setTimeout(() => setSaved(false), 1200);
+            }}
+          >
+            恢复默认
+          </button>
+        )}
+      </div>
+      <textarea
+        ref={ref}
+        className="field guide-textarea"
+        rows={rows}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void commit();
+        }}
+      />
+      {hint && <p className="meta pad">{hint}</p>}
+    </div>
+  );
+}
+
+type ToolGuideSide = "owner" | "guest";
+
+/**
+ * 工具守则：「8、我能用的工具」那一块，拆成 语义组 → 逐工具 两级。
+ *
+ * 一件工具一格提示词，改 read_url 不影响 draw；每组末尾一格写「这一组里
+ * 什么话用哪件」；跨组的话（调用纪律、call_tool 用法、主动开口）收在末尾
+ * 的「工具组使用风格」里。名册从 /api/tool-groups 取 —— 前后端各写一份
+ * 必定对不上号（未来接 MCP 时新工具会自动出现在这里）。
+ *
+ * 主人/来客两套分开存、分开改：来客屋有自己的状态，管理员改主人那份，
+ * 覆盖值不该漏到别人屋里去。
+ */
+export function ToolGuidePanel({
+  state,
+  patch,
+}: {
+  state: ChatState;
+  patch: Patch;
+}) {
+  const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
+  const [err, setErr] = useState("");
+  const [side, setSide] = useState<ToolGuideSide>("owner");
+  const [closed, setClosed] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    api
+      .getToolGroups()
+      .then(setCatalog)
+      .catch((e: Error) => setErr(e.message));
+  }, []);
+
+  if (err)
+    return (
+      <div className="panel-body">
+        <p className="err">{err}</p>
+      </div>
+    );
+  if (!catalog)
+    return (
+      <div className="panel-body">
+        <p className="empty-sm">读取中…</p>
+      </div>
+    );
+
+  const guest = side === "guest";
+  const defs = catalog.defaults[side];
+  // 当前自定义从 state 取（catalog.current 是请求那一刻的快照，改完不会回灌）
+  const cur = guest
+    ? {
+        prompts: state.guestToolPrompts ?? {},
+        groupNotes: state.guestToolGroupNotes ?? {},
+        style: state.guestToolStyle ?? "",
+      }
+    : {
+        prompts: state.toolPrompts ?? {},
+        groupNotes: state.toolGroupNotes ?? {},
+        style: state.toolStyle ?? "",
+      };
+
+  // 三格各自的落库目标：同一份逻辑走主人/来客两套字段
+  const writePrompt = (name: string, text: string) =>
+    void patch(
+      (guest
+        ? { guestToolPrompts: { ...cur.prompts, [name]: text } }
+        : {
+            toolPrompts: { ...cur.prompts, [name]: text },
+          }) as Partial<ChatState>,
+    );
+  const writeNote = (gid: string, text: string) =>
+    void patch(
+      (guest
+        ? { guestToolGroupNotes: { ...cur.groupNotes, [gid]: text } }
+        : {
+            toolGroupNotes: { ...cur.groupNotes, [gid]: text },
+          }) as Partial<ChatState>,
+    );
+  const writeStyle = (text: string) =>
+    void patch(
+      (guest
+        ? { guestToolStyle: text }
+        : { toolStyle: text }) as Partial<ChatState>,
+    );
+
+  // 组内该露脸的工具：主人那间 = owner，来客那间 = guest
+  const groups: Array<{ def: ToolGroupDef; tools: ToolCatalog["tools"] }> =
+    catalog.groups
+      .map((def) => ({
+        def,
+        tools: catalog.tools.filter(
+          (t) => t.group === def.id && (guest ? t.guest : t.owner),
+        ),
+      }))
+      .filter((g) => g.tools.length);
+
+  return (
+    <div className="panel-body">
+      <p className="meta">
+        一件工具一格：改一件不影响别的。改完移开焦点即保存（Ctrl/⌘+Enter
+        也行）。 「默认」是按出厂稿说的，「自定义」才用你写的那句。
+      </p>
+
+      <div className="tabs">
+        <button
+          className={`chip ${!guest ? "on" : ""}`}
+          onClick={() => setSide("owner")}
+        >
+          主人那间
+        </button>
+        <button
+          className={`chip ${guest ? "on" : ""}`}
+          onClick={() => setSide("guest")}
+        >
+          来客那间
+        </button>
+      </div>
+      <p className="meta pad">
+        {guest
+          ? "来客那间另有一份，与主人这份互不影响。这里写的只对来客生效；档位关掉的工具不出现在提示词里，写了也用不上。"
+          : "主人那间这份改的是你自己的助手；来客那间那份在另一个标签页里改。"}
+      </p>
+
+      {groups.map(({ def, tools }) => {
+        const open = !closed[def.id];
+        return (
+          <div className="guide-group" key={def.id}>
+            <button
+              className="guide-group-head"
+              onClick={() => setClosed((prev) => ({ ...prev, [def.id]: open }))}
+              aria-expanded={open}
+            >
+              <Icon name={open ? "minus" : "plus"} />
+              <span className="guide-group-label">{def.label}</span>
+              <span className="meta">{def.hint}</span>
+              <span className="meta">{tools.length} 件</span>
+            </button>
+            {open && (
+              <div className="guide-group-body">
+                {tools.map((t) => (
+                  <GuideField
+                    key={t.name}
+                    label={`${toolMeta(t.name).zh}（${t.name}）${
+                      t.resident ? " · 直接调" : " · 经 call_tool 调"
+                    }`}
+                    value={cur.prompts[t.name] ?? ""}
+                    fallback={defs.prompts[t.name] ?? ""}
+                    onSave={(text) => {
+                      writePrompt(t.name, text);
+                      return Promise.resolve();
+                    }}
+                    onReset={() => {
+                      writePrompt(t.name, "");
+                      return Promise.resolve();
+                    }}
+                  />
+                ))}
+                <GuideField
+                  label={`【${def.label}】本组取舍`}
+                  hint="这一组里什么话用哪件，写在组末。"
+                  value={cur.groupNotes[def.id] ?? ""}
+                  fallback={defs.groupNotes[def.id] ?? ""}
+                  rows={3}
+                  onSave={(text) => {
+                    writeNote(def.id, text);
+                    return Promise.resolve();
+                  }}
+                  onReset={() => {
+                    writeNote(def.id, "");
+                    return Promise.resolve();
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="guide-group">
+        <div className="guide-group-head static">
+          <span className="guide-group-label">工具组使用风格</span>
+          <span className="meta">跨组的话：调用纪律、call_tool、主动开口</span>
+        </div>
+        <div className="guide-group-body">
+          <GuideField
+            label="使用风格"
+            value={cur.style}
+            fallback={defs.style}
+            rows={7}
+            onSave={(text) => {
+              writeStyle(text);
+              return Promise.resolve();
+            }}
+            onReset={() => {
+              writeStyle("");
+              return Promise.resolve();
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 回想守则：没人说话半小时后，她回头整理这场对话时读的提示词。
+ * 默认口径是工作纪要（发生了什么、做了什么、什么情况、要收敛什么、下一步），
+ * 不是感想 —— 这里改的是「记什么」，改完只影响之后的回想，不追溯已入库的条目。
+ */
+export function RecapGuidePanel({
+  state,
+  patch,
+}: {
+  state: ChatState;
+  patch: Patch;
+}) {
+  const { defaults, err } = usePromptDefaults();
+  return (
+    <>
+      <PromptEditor
+        rows={12}
+        hint="没人说话半小时后，她回头整理这场对话时读的提示词。改完只影响之后的回想，不追溯已入库的条目。"
+        current={state.recapPrompt ?? ""}
+        fallback={defaults.recap}
+        onSave={async (text) => void (await patch({ recapPrompt: text }))}
+        onReset={async () => void (await patch({ recapPrompt: "" }))}
+      />
+      {err && <p className="err">{err}</p>}
+    </>
   );
 }
 // ── 会话 ──────────────────────────────────────────────
@@ -1489,43 +1842,16 @@ export function VisitorsPanel() {
   );
 }
 
-// ── 来客类型（口令与权限）──────────────────────────────
-
-/** 三个可裁剪的权限：chips 的顺序与中文名。留痕日志不在其中 —— 那是恒开的。 */
-const GUEST_PERMS: Array<{
-  key: "permSearch" | "permDraw" | "permMemory";
-  label: string;
-}> = [
-  { key: "permSearch", label: "联网检索" },
-  { key: "permDraw", label: "画画" },
-  { key: "permMemory", label: "记忆库" },
-];
-
-/**
- * 长期权益：普通口令进来的临时来客没有持久身份，谈不上「自己的」东西，
- * 所以这组开关只对持身份卡的长期使用者生效（凭卡解锁，见 src/index.ts cardAllows）。
- * 与对外工具分开一排，提醒主人这是另一层门。
- */
-const CARD_PERMS: Array<{
-  key: "permNotes" | "permFiles" | "permPublic";
-  label: string;
-}> = [
-  { key: "permNotes", label: "记事本" },
-  { key: "permFiles", label: "云盘上传" },
-  { key: "permPublic", label: "公开内容" },
-];
+// ── 来客类型（口令与说明）──────────────────────────────
+//
+// 权益不在这里改 —— 逐工具的权限矩阵搬到了「来客权限管理」页（见 GuestPermsPanel）。
+// 这一页只管「有哪些档、各用什么口令进门、怎么接待」；新建的档默认对外工具全开。
 
 /** 行内编辑表单的草稿：从某一行复制出来，改完整体 PATCH */
 interface GuestDraft {
   name: string;
   password: string;
   note: string;
-  permSearch: boolean;
-  permDraw: boolean;
-  permMemory: boolean;
-  permNotes: boolean;
-  permFiles: boolean;
-  permPublic: boolean;
   active: boolean;
 }
 
@@ -1534,12 +1860,6 @@ const draftOf = (t: GuestType): GuestDraft => ({
   // 口令不回显（后端只存摘要）：留空表示不改，要换才填
   password: "",
   note: t.note,
-  permSearch: t.permSearch,
-  permDraw: t.permDraw,
-  permMemory: t.permMemory,
-  permNotes: t.permNotes,
-  permFiles: t.permFiles,
-  permPublic: t.permPublic,
   active: t.active,
 });
 
@@ -1556,19 +1876,11 @@ export function GuestTypesPanel() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  // 新增表单：名称 + 口令必填；对外工具默认全开，长期权益默认全关
-  // （与后端 create 的缺省一致：先来的是临时来客，私人空间等他领了卡再说）
+  // 新增表单：名称 + 口令必填；对外工具与长期权益都走后端缺省
+  // （新档对外工具全开、长期权益全关：先来的是临时来客，私人空间等他领了卡再说）
   const [nName, setNName] = useState("");
   const [nPw, setNPw] = useState("");
   const [nNote, setNNote] = useState("");
-  const [nPerms, setNPerms] = useState({
-    permSearch: true,
-    permDraw: true,
-    permMemory: true,
-    permNotes: false,
-    permFiles: false,
-    permPublic: false,
-  });
   const [addErr, setAddErr] = useState("");
   const [adding, setAdding] = useState(false);
 
@@ -1609,23 +1921,16 @@ export function GuestTypesPanel() {
     setAdding(true);
     setAddErr("");
     try {
+      // 工具权益与长期权益都不带：走后端缺省（对外全开、长期全关），
+      // 之后到「来客权限管理」页按件调
       await api.guestTypeAdd({
         name: nName.trim(),
         password: nPw.trim(),
         note: nNote.trim(),
-        ...nPerms,
       });
       setNName("");
       setNPw("");
       setNNote("");
-      setNPerms({
-        permSearch: true,
-        permDraw: true,
-        permMemory: true,
-        permNotes: false,
-        permFiles: false,
-        permPublic: false,
-      });
       await load();
     } catch (e) {
       // 后端校验不过（如口令和现有的重复）原样摆在这里，不翻译
@@ -1673,7 +1978,8 @@ export function GuestTypesPanel() {
   return (
     <div className="panel-body">
       <p className="meta">
-        不同口令进来是不同类型：各自独立房间与记忆，权限按这里的设置裁剪。口令只存摘要不回显，忘了就在编辑里重设。改动对之后新登录的来客生效。
+        不同口令进来是不同类型：各自独立房间与记忆。这一页只管档位与口令；
+        各档能用哪些工具，去「来客权限管理」页按件勾。口令只存摘要不回显，忘了就在编辑里重设。改动对之后新登录的来客生效。
       </p>
 
       <h3 className="sect">新增类型</h3>
@@ -1699,38 +2005,9 @@ export function GuestTypesPanel() {
             onChange={(e) => setNNote(e.target.value)}
           />
         </div>
-        <div className="tabs">
-          {GUEST_PERMS.map((p) => (
-            <button
-              key={p.key}
-              className={`chip ${nPerms[p.key] ? "on" : ""}`}
-              onClick={() =>
-                setNPerms((prev) => ({ ...prev, [p.key]: !prev[p.key] }))
-              }
-            >
-              {p.label}
-            </button>
-          ))}
-          <span className="chip on" style={{ cursor: "default" }}>
-            留痕日志
-          </span>
-        </div>
-        <div className="tabs">
-          <span className="meta" style={{ alignSelf: "center" }}>
-            长期权益（凭身份卡解锁）：
-          </span>
-          {CARD_PERMS.map((p) => (
-            <button
-              key={p.key}
-              className={`chip ${nPerms[p.key] ? "on" : ""}`}
-              onClick={() =>
-                setNPerms((prev) => ({ ...prev, [p.key]: !prev[p.key] }))
-              }
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+        <p className="meta">
+          新档默认对外工具全开、长期权益全关 —— 到「来客权限管理」页再按件调。
+        </p>
         <div className="inline-form">
           <button
             className="btn btn-primary btn-sm"
@@ -1760,28 +2037,46 @@ export function GuestTypesPanel() {
               </div>
 
               <div className="remind-when">
-                {GUEST_PERMS.map((p) => (
+                {t.tools.length ? (
+                  t.tools.map((n) => (
+                    <span
+                      key={n}
+                      className="chip on"
+                      style={{ cursor: "default" }}
+                    >
+                      {toolMeta(n).zh}
+                    </span>
+                  ))
+                ) : (
+                  <span className="meta">对外工具全关</span>
+                )}
+                {t.permNotes && (
                   <span
-                    key={p.key}
-                    className={`chip ${t[p.key] ? "on" : ""}`}
-                    style={{ cursor: "default" }}
-                  >
-                    {p.label}
-                  </span>
-                ))}
-                {CARD_PERMS.map((p) => (
-                  <span
-                    key={p.key}
-                    className={`chip ${t[p.key] ? "on" : ""}`}
+                    className="chip on"
                     style={{ cursor: "default" }}
                     title="只对持身份卡的长期使用者生效"
                   >
-                    {p.label}
+                    记事本
                   </span>
-                ))}
-                <span className="chip on" style={{ cursor: "default" }}>
-                  留痕日志
-                </span>
+                )}
+                {t.permFiles && (
+                  <span
+                    className="chip on"
+                    style={{ cursor: "default" }}
+                    title="只对持身份卡的长期使用者生效"
+                  >
+                    云盘上传
+                  </span>
+                )}
+                {t.permPublic && (
+                  <span
+                    className="chip on"
+                    style={{ cursor: "default" }}
+                    title="只对持身份卡的长期使用者生效"
+                  >
+                    公开内容
+                  </span>
+                )}
               </div>
 
               {t.note && (
@@ -1847,35 +2142,9 @@ export function GuestTypesPanel() {
                       setDraft({ ...draft, note: e.target.value })
                     }
                   />
-                  <div className="tabs">
-                    {GUEST_PERMS.map((p) => (
-                      <button
-                        key={p.key}
-                        className={`chip ${draft[p.key] ? "on" : ""}`}
-                        onClick={() =>
-                          setDraft({ ...draft, [p.key]: !draft[p.key] })
-                        }
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="tabs">
-                    <span className="meta" style={{ alignSelf: "center" }}>
-                      长期权益（凭身份卡解锁）：
-                    </span>
-                    {CARD_PERMS.map((p) => (
-                      <button
-                        key={p.key}
-                        className={`chip ${draft[p.key] ? "on" : ""}`}
-                        onClick={() =>
-                          setDraft({ ...draft, [p.key]: !draft[p.key] })
-                        }
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="meta pad">
+                    对外工具与长期权益到「来客权限管理」页按件调。
+                  </p>
                   <label className="check-line">
                     <input
                       type="checkbox"
@@ -1916,6 +2185,237 @@ export function GuestTypesPanel() {
         <p className="empty-sm">
           还没有自定义类型。通用门禁口令进来的来客不在此列，权限全开。
         </p>
+      )}
+
+      {err && <p className="err">{err}</p>}
+    </div>
+  );
+}
+
+// ── 来客权限管理（各档 × 各工具）──────────────────────
+
+/**
+ * 长期权益：普通口令进来的临时来客没有持久身份，谈不上「自己的」东西，
+ * 所以这组开关只对持身份卡的长期使用者生效（凭卡解锁，见 src/index.ts cardAllows）。
+ */
+const CARD_PERMS: Array<{
+  key: "permNotes" | "permFiles" | "permPublic";
+  label: string;
+  hint: string;
+}> = [
+  { key: "permNotes", label: "记事本", hint: "给自己写私人草稿的笔记本" },
+  { key: "permFiles", label: "云盘上传", hint: "上传并管理自己的文件" },
+  {
+    key: "permPublic",
+    label: "公开内容",
+    hint: "往公共墙上贴纸条、看公开文件",
+  },
+];
+
+/**
+ * 来客权限管理：一张矩阵 —— 每行一档来客，每列一件对外工具。
+ *
+ * 对外工具里能被关掉的（guestTogglable）逐件勾选；恒开的（天气/识图/卡片/留痕）
+ * 置灰标「恒开」—— 那是介绍页当面说过的，没有关掉的路。长期权益另起一小节。
+ *
+ * 名册从 /api/tool-groups 取（与工具守则面板同一份），档位从 /api/guest-types 取。
+ * 改一格立刻 PATCH 这一档的整份工具清单：逐格提交，不必整页保存。
+ * 改动对之后新登录的来客生效。
+ */
+export function GuestPermsPanel() {
+  const [catalog, setCatalog] = useState<ToolCatalog | null>(null);
+  const [types, setTypes] = useState<GuestType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [c, t] = await Promise.all([api.getToolGroups(), api.guestTypes()]);
+      setCatalog(c);
+      setTypes(t);
+      setErr("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (!catalog)
+    return (
+      <div className="panel-body">
+        {err ? (
+          <p className="err">{err}</p>
+        ) : (
+          <p className="empty-sm">读取中…</p>
+        )}
+      </div>
+    );
+
+  const guestTools = catalog.tools.filter((t) => t.guest);
+  const togglable = guestTools.filter((t) => t.guestTogglable);
+  const alwaysOn = guestTools.filter((t) => !t.guestTogglable);
+
+  const setTool = async (t: GuestType, name: string, on: boolean) => {
+    const next = on
+      ? [...new Set([...t.tools, name])]
+      : t.tools.filter((x) => x !== name);
+    setBusy(`${t.id}:${name}`);
+    try {
+      await api.guestTypePatch({ id: t.id, tools: next });
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const setCardPerm = async (
+    t: GuestType,
+    key: "permNotes" | "permFiles" | "permPublic",
+    on: boolean,
+  ) => {
+    setBusy(`${t.id}:${key}`);
+    try {
+      await api.guestTypePatch({ id: t.id, [key]: on });
+      await load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <div className="panel-body">
+      <p className="meta">
+        逐件勾这一档能用的工具：勾了才出现在来客那间；没勾的，来客问起来助手会照实说「做不到」，不拿好听的话应付。
+        改一格即时生效，对之后新登录的来客生效。通用门禁口令进来的来客不在此列
+        —— 那种来客权限全开。
+      </p>
+
+      {loading && <p className="empty-sm">读取中…</p>}
+
+      {!loading && !types.length && (
+        <p className="empty-sm">
+          还没有自定义档位。先去「来客类型」页建一档、配好口令，再回来勾工具。
+        </p>
+      )}
+
+      {!!types.length && (
+        <>
+          <h3 className="sect">对外工具</h3>
+          <div className="perm-scroll">
+            <table className="perm-matrix">
+              <thead>
+                <tr>
+                  <th className="perm-corner">档位</th>
+                  {togglable.map((t) => (
+                    <th key={t.name} title={t.name}>
+                      {toolMeta(t.name).zh}
+                    </th>
+                  ))}
+                  {alwaysOn.map((t) => (
+                    <th
+                      key={t.name}
+                      className="perm-always"
+                      title={`${t.name} · 恒开，关不掉`}
+                    >
+                      {toolMeta(t.name).zh}
+                      <span className="perm-always-tag">恒开</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {types.map((t) => (
+                  <tr
+                    key={t.id}
+                    style={!t.active ? { opacity: 0.55 } : undefined}
+                  >
+                    <th className="perm-rowhead">
+                      {t.name}
+                      {!t.active && <span className="tag">已停用</span>}
+                    </th>
+                    {togglable.map((tool) => {
+                      const on = t.tools.includes(tool.name);
+                      const key = `${t.id}:${tool.name}`;
+                      return (
+                        <td key={tool.name}>
+                          <button
+                            className={`perm-cell ${on ? "on" : ""}`}
+                            disabled={busy === key}
+                            onClick={() => void setTool(t, tool.name, !on)}
+                            aria-pressed={on}
+                            aria-label={`${t.name} · ${toolMeta(tool.name).zh}`}
+                            title={`${toolMeta(tool.name).zh}：${on ? "已开，点一下关掉" : "已关，点一下打开"}`}
+                          >
+                            {on ? "✓" : "·"}
+                          </button>
+                        </td>
+                      );
+                    })}
+                    {alwaysOn.map((tool) => (
+                      <td key={tool.name}>
+                        <span
+                          className="perm-cell on locked"
+                          title={`${toolMeta(tool.name).zh} · 恒开`}
+                        >
+                          ✓
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="meta pad">
+            「恒开」那几件（天气、识图、交互卡片、留痕）不出网、不留东西，介绍页当面说过，来客恒有。
+          </p>
+
+          <h3 className="sect">长期权益（凭身份卡）</h3>
+          <p className="meta">
+            普通口令进来的临时来客没有持久身份，谈不上「自己的」东西，所以这三项只对持身份卡的长期使用者生效。
+          </p>
+          <ul className="remind-list">
+            {types.map((t) => (
+              <li
+                className="remind-row"
+                key={t.id}
+                style={!t.active ? { opacity: 0.55 } : undefined}
+              >
+                <div className="remind-when">
+                  <span style={{ fontWeight: 600 }}>{t.name}</span>
+                  {!t.active && <span className="tag">已停用</span>}
+                </div>
+                <div className="remind-when">
+                  {CARD_PERMS.map((p) => {
+                    const on = t[p.key];
+                    const key = `${t.id}:${p.key}`;
+                    return (
+                      <button
+                        key={p.key}
+                        className={`chip ${on ? "on" : ""}`}
+                        disabled={busy === key}
+                        onClick={() => void setCardPerm(t, p.key, !on)}
+                        title={p.hint}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {err && <p className="err">{err}</p>}
