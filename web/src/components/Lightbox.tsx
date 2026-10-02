@@ -6,7 +6,7 @@
 // 传进去的回调一旦换身份，memo 就白做了（整场历史都要重新解析一遍）。
 // 事件是模块级的：谁看见图谁喊一声，不需要谁记得往下传，也不牵动渲染。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import "./Lightbox.css";
 
@@ -16,7 +16,7 @@ const ZOOM_EVENT = "ericher:zoom";
  * 任何地方看见一张能看的图，都调它放大。
  * src 是能直接当 <img>/链接用的地址；inlineSvg 是一段 SVG 源码 —— mermaid 的图
  * 带着 HTML 标签（foreignObject），塞进 <img>（无论 data: 还是 blob:）都渲染不了，
- * 只能像正文里那样原地内联注入。给了一份源码就看它，src 只留作下载/新窗口的地址。
+ * 只能像正文里那样原地内联注入。
  */
 export function zoomIn(src: string, alt: string, inlineSvg = "") {
   if (!src && !inlineSvg) return;
@@ -27,8 +27,7 @@ export function zoomIn(src: string, alt: string, inlineSvg = "") {
 
 /**
  * 换图 / 关图时把 blob 地址放掉 —— mermaid 大图的 blob 是真占内存的字节引用，
- * 不像 data: 只是一串字符。data: 等其它地址原样放行（revoke 对它们无意义也不报错，
- * 但省一次判断之外的方法调用）。
+ * 不像 data: 只是一串字符。其它地址原样放行。
  */
 function dropPic(p: { src: string; alt: string; inlineSvg?: string } | null) {
   if (p && p.src.startsWith("blob:")) URL.revokeObjectURL(p.src);
@@ -38,6 +37,12 @@ function dropPic(p: { src: string; alt: string; inlineSvg?: string } | null) {
 /**
  * 铺满一屏的看图层。顶部工具条上是「下载原图 / 新窗口打开 / 关掉」，
  * Esc 或点空白处也能关 —— 看图的时候手最不想离开键盘。
+ *
+ * 打开一张图走的是三级台阶，哪级立得住就停在哪级：
+ *  1. auto：有 SVG 源码就原地内联注入（和正文里那张同一份 DOM）；注入后量一量，
+ *     svg 没立起来（0 宽，flex 容器里 width=100% 会塌缩）就降到下一级
+ *  2. img：位图直接摆；.svg 文件加载失败时把源文件取回来转内联再试一次（旧图走这条）
+ *  3. miss：全走完还不行，给人话和一条「在新窗口打开」的活路，不玩失踪
  */
 export function Lightbox() {
   const [pic, setPic] = useState<{
@@ -45,7 +50,8 @@ export function Lightbox() {
     alt: string;
     inlineSvg?: string;
   } | null>(null);
-  const [broken, setBroken] = useState(false);
+  const [mode, setMode] = useState<"auto" | "img" | "miss">("auto");
+  const svgBox = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onZoom = (e: Event) => {
@@ -65,7 +71,7 @@ export function Lightbox() {
         dropPic(prev);
         return { ...next, src };
       });
-      setBroken(false);
+      setMode("auto");
     };
     window.addEventListener(ZOOM_EVENT, onZoom);
     return () => window.removeEventListener(ZOOM_EVENT, onZoom);
@@ -85,11 +91,21 @@ export function Lightbox() {
     return () => window.removeEventListener("keydown", onKey);
   }, [pic]);
 
+  // 台阶一的验收：内联注入是同步的，稍等一拍再量 —— svg 没立起来就降级
+  useEffect(() => {
+    if (!pic?.inlineSvg || mode !== "auto") return;
+    const t = setTimeout(() => {
+      const el = svgBox.current?.querySelector("svg");
+      const w = el ? el.getBoundingClientRect().width : 0;
+      if (!el || w < 4) setMode("img");
+    }, 80);
+    return () => clearTimeout(t);
+  }, [pic, mode]);
+
   if (!pic) return null;
 
   // 下载时给个像样的文件名：地址里最后那一段就是云盘里的 key。
-  // 模型手写的地址可能是过不去的编码，解不开就退回原样的那一段 ——
-  // 这里不值得为它把整个看图层崩掉。
+  // 模型手写的地址可能是过不去的编码，解不开就退回原样的那一段。
   const raw = pic.src.split("/").pop() || "";
   let name = raw || "图片";
   try {
@@ -97,6 +113,30 @@ export function Lightbox() {
   } catch {
     // 解不开就用手上这段原样的
   }
+
+  const imgFallback = () => {
+    // .svg 文件在 <img> 里装不下（foreignObject 一类）：把源文件取回来内联再试
+    if (/\.svg($|\?)/i.test(pic.src) && !pic.inlineSvg) {
+      fetch(pic.src)
+        .then((r) =>
+          r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)),
+        )
+        .then((t) => {
+          if (!t.includes("<svg")) throw new Error("不是 SVG");
+          const blob = URL.createObjectURL(
+            new Blob([t], { type: "image/svg+xml" }),
+          );
+          setPic((p) => {
+            dropPic(p);
+            return p ? { ...p, inlineSvg: t, src: blob } : p;
+          });
+          setMode("auto");
+        })
+        .catch(() => setMode("miss"));
+      return;
+    }
+    setMode("miss");
+  };
 
   return (
     <div className="lightbox" onClick={() => setPic(dropPic)}>
@@ -127,19 +167,25 @@ export function Lightbox() {
           <Icon name="x" size={16} />
         </button>
       </div>
-      {broken ? (
-        // 没取到的时候说清是「没取到」，而不是留一片空白让人以为是卡了。
-        // 地址只对「云盘路径」这种短地址有排障价值；data:/blob: 是把整张图
-        // 塞进地址里的大块头 —— 原样摆出来就是一屏乱码，只说原因
+      {mode === "miss" ? (
+        // 三级台阶全走完了：明说没打开成，把源文件的门留着 —— 不留一片空白让人以为是卡了
         <p className="lightbox-miss">
-          {pic.src.startsWith("data:") || pic.src.startsWith("blob:")
-            ? "这张图没能渲染出来 —— 图的内容太大，浏览器装不下这段地址。"
-            : `这张图没取回来 —— 地址是 ${pic.src.slice(0, 300)}${pic.src.length > 300 ? "…" : ""}。云盘里可能已经没有它了。`}
+          这张图没能在这个窗口里打开 —— 内容太大或格式太挑。
+          {pic.src ? (
+            <>
+              {" "}
+              源文件还在，
+              <a href={pic.src} target="_blank" rel="noopener noreferrer">
+                在新窗口打开
+              </a>
+              试试；不行就用上面的下载按钮存下来看。
+            </>
+          ) : null}
         </p>
-      ) : pic.inlineSvg ? (
-        // mermaid 的图不走 <img>：原地注入，和正文里那张是同一份 DOM，
-        // 正文能显它就能显 —— 图片上下文（data:/blob: 的 img）反而装不下它
+      ) : pic.inlineSvg && mode === "auto" ? (
+        // mermaid 的图不走 <img>：原地注入，和正文里那张是同一份 DOM
         <div
+          ref={svgBox}
           className="lightbox-img lightbox-svg"
           onClick={(e) => e.stopPropagation()}
           dangerouslySetInnerHTML={{ __html: pic.inlineSvg }}
@@ -150,7 +196,7 @@ export function Lightbox() {
           src={pic.src}
           alt={pic.alt || name}
           onClick={(e) => e.stopPropagation()}
-          onError={() => setBroken(true)}
+          onError={imgFallback}
         />
       )}
     </div>

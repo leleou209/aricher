@@ -76,19 +76,18 @@
   animation: rise-in 0.18s ease-out;
 }
 
-/* 内联注入的 mermaid 大图：svg 根是 width 100% + max-width 的，得把容器框住 */
+/* 内联注入的 mermaid 大图：给个确定的宽，svg 的 width=100% 才不会塌成 0 */
 .lightbox-svg {
-  max-width: 90vw;
+  width: min(86vw, 1400px);
   max-height: 85vh;
   overflow: auto;
   padding: 8px 12px;
 }
 
 .lightbox-svg svg {
-  max-width: min(86vw, 1400px);
-  max-height: 82vh;
-  width: auto;
+  width: 100%;
   height: auto;
+  max-height: 82vh;
 }
 
 /* 没取回来时的说明卡：地址可能很长，得能断行 */
@@ -103,6 +102,11 @@
   line-height: 1.8;
   color: var(--yuzhe-ink-dim);
   word-break: break-all;
+}
+
+.lightbox-miss a {
+  color: var(--yuzhe-ink);
+  text-underline-offset: 3px;
 }
 
 @media (max-width: 860px) {
