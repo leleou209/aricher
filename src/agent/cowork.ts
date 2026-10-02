@@ -1397,7 +1397,11 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     await this.healDanglingToolCalls();
     // 统计和额度都在这儿收口：一轮写一次，而不是每条语句、每次工具调用写一次
     this.flushToolStats();
-    this.meter.turn(result.status === "completed" ? "回答" : "中断");
+    // 状态原样进日志：aborted（连接/客户端叫停）和 skipped（切会话推进代际）
+    // 在界面上长一个样，排障时是两回事
+    this.meter.turn(
+      result.status === "completed" ? "回答" : `中断(${result.status})`,
+    );
     this.flushUsage();
     if (result.status === "completed") {
       this.snapshotSession();

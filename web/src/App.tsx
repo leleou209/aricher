@@ -1117,10 +1117,13 @@ function Shell({
   );
 
   // Esc 打断：手不用离开键盘。这是「别说了」最自然的手势。
+  // 但浮层（看图层、命令菜单）也认 Esc —— 它们把这下手势 preventDefault 认走时，
+  // 这里就别再接：人家关的是自己的面板，不该顺手把正在跑的生成轮也砍了
+  //（看图层的监听挂载在先、这里的随后重挂，认领逻辑先于本处执行，次序成立）
   useEffect(() => {
     if (!busy) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") halt();
+      if (e.key === "Escape" && !e.defaultPrevented) halt();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

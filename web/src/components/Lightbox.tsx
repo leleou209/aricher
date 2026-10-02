@@ -74,7 +74,12 @@ export function Lightbox() {
   useEffect(() => {
     if (!pic) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPic(dropPic);
+      if (e.key === "Escape") {
+        // preventDefault 是「认领」：App 上那个全局 Esc 听着「别说了」，
+        // 看图层的这下手势得先声明是我的，不然关个图就把生成轮砍了
+        e.preventDefault();
+        setPic(dropPic);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
