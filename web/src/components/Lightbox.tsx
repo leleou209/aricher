@@ -19,6 +19,16 @@ export function zoomIn(src: string, alt: string) {
 }
 
 /**
+ * 换图 / 关图时把 blob 地址放掉 —— mermaid 大图的 blob 是真占内存的字节引用，
+ * 不像 data: 只是一串字符。data: 等其它地址原样放行（revoke 对它们无意义也不报错，
+ * 但省一次判断之外的方法调用）。
+ */
+function dropPic(p: { src: string; alt: string } | null) {
+  if (p && p.src.startsWith("blob:")) URL.revokeObjectURL(p.src);
+  return null;
+}
+
+/**
  * 铺满一屏的看图层。顶部工具条上是「下载原图 / 新窗口打开 / 关掉」，
  * Esc 或点空白处也能关 —— 看图的时候手最不想离开键盘。
  */
@@ -28,7 +38,12 @@ export function Lightbox() {
 
   useEffect(() => {
     const onZoom = (e: Event) => {
-      setPic((e as CustomEvent<{ src: string; alt: string }>).detail);
+      const next = (e as CustomEvent<{ src: string; alt: string }>).detail;
+      // 连开两张时先放掉前一张的 blob，再换上去
+      setPic((prev) => {
+        dropPic(prev);
+        return next;
+      });
       setBroken(false);
     };
     window.addEventListener(ZOOM_EVENT, onZoom);
@@ -38,7 +53,7 @@ export function Lightbox() {
   useEffect(() => {
     if (!pic) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPic(null);
+      if (e.key === "Escape") setPic(dropPic);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -58,7 +73,7 @@ export function Lightbox() {
   }
 
   return (
-    <div className="lightbox" onClick={() => setPic(null)}>
+    <div className="lightbox" onClick={() => setPic(dropPic)}>
       <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
         <span className="lightbox-name">{pic.alt || name}</span>
         <a
@@ -80,7 +95,7 @@ export function Lightbox() {
         </a>
         <button
           className="lightbox-btn"
-          onClick={() => setPic(null)}
+          onClick={() => setPic(dropPic)}
           title="关掉（Esc）"
         >
           <Icon name="x" size={16} />
@@ -88,9 +103,12 @@ export function Lightbox() {
       </div>
       {broken ? (
         // 没取到的时候说清是「没取到」，而不是留一片空白让人以为是卡了。
-        // 地址也摆出来：是地址写错了、还是云盘里已经没有它，一眼能看出来。
+        // 地址只对「云盘路径」这种短地址有排障价值；data:/blob: 是把整张图
+        // 塞进地址里的大块头 —— 原样摆出来就是一屏乱码，只说原因
         <p className="lightbox-miss">
-          这张图没取回来 —— 地址是 {pic.src}。云盘里可能已经没有它了。
+          {pic.src.startsWith("data:") || pic.src.startsWith("blob:")
+            ? "这张图没能渲染出来 —— 图的内容太大，浏览器装不下这段地址。"
+            : `这张图没取回来 —— 地址是 ${pic.src.slice(0, 300)}${pic.src.length > 300 ? "…" : ""}。云盘里可能已经没有它了。`}
         </p>
       ) : (
         <img

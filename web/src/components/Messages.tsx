@@ -148,8 +148,14 @@ function loadMermaid(): Promise<(typeof import("mermaid"))["default"]> {
   return mermaidMod;
 }
 
-function svgToDataUrl(svg: string): string {
-  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+/**
+ * mermaid 渲染出来的 SVG → blob 地址。
+ * 为什么不走 data:：编码塞进 URL 有 Chromium 的 2MB 上限，大图当场加载失败，
+ * 看图层只能把那串编码文本摆出来 —— 用户看到的就是「乱码」。
+ * blob 是字节引用，没有长度限制；新窗口打开、下载原图也都认它。
+ */
+function svgToBlobUrl(svg: string): string {
+  return URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
 }
 
 /**
@@ -210,7 +216,7 @@ function MermaidView({ source, alt }: { source: string; alt: string }) {
     <div
       className="mermaid-view"
       title="点开看大图"
-      onClick={() => zoomIn(svgToDataUrl(svg), alt)}
+      onClick={() => zoomIn(svgToBlobUrl(svg), alt)}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
