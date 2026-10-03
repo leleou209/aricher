@@ -1139,47 +1139,39 @@ async function handleApi(
   // 开源仓 package.json 的 version（随发布一起走）比本地新，才是真的该更新；
   // 构建号与提交信息照旧取回来，作「对方走到哪了」的参照。
   // 转发放到 Worker 端而不是浏览器直连 —— Cloudflare 到 GitHub 的路比访客
-  // 浏览器到 GitHub 的路稳得多，而且不用在前端暴露对 api.github.com 的依赖。
+  // 浏览器到 GitHub 的路稳得多，前端也不必自己会走 GitHub。
+  //
+  // 只读 raw.githubusercontent 一个文件（scripts/publish-open-source.mjs 每次
+  // 发布写好的 version.json），不去打 api.github.com：那个接口匿名只有
+  // 60 次/小时/IP，而 Worker 出口是共享 IP —— 实测它长期回 403，整条检查跟着哑掉。
   if (p === "/api/update-check" && m === "GET") {
     try {
-      const [pkgRes, commitRes] = await Promise.all([
-        fetch(
-          "https://raw.githubusercontent.com/leleou209/ericher/main/package.json",
-          {
-            headers: { "User-Agent": "ericher-update-check" },
-          },
-        ),
-        fetch("https://api.github.com/repos/leleou209/ericher/commits/main", {
-          headers: {
-            "User-Agent": "ericher-update-check",
-            Accept: "application/vnd.github+json",
-          },
-        }),
-      ]);
-      if (!pkgRes.ok || !commitRes.ok)
+      const res = await fetch(
+        "https://raw.githubusercontent.com/leleou209/ericher/main/version.json",
+        { headers: { "User-Agent": "ericher-update-check" } },
+      );
+      if (!res.ok)
         return Response.json(
-          {
-            ok: false,
-            error: `GitHub 返回 ${!pkgRes.ok ? pkgRes.status : commitRes.status}`,
-          },
+          { ok: false, error: `GitHub 返回 ${res.status}` },
           { status: 502 },
         );
-      const pkg = (await pkgRes.json()) as { version?: string };
-      const j = (await commitRes.json()) as {
-        sha: string;
-        commit: { message: string; committer?: { date?: string } };
+      const j = (await res.json()) as {
+        version?: string;
+        hash?: string;
+        message?: string;
+        date?: string;
       };
-      const remote = (pkg.version || "").trim();
+      const remote = (j.version || "").trim();
       if (!remote)
         return Response.json(
-          { ok: false, error: "开源仓 package.json 没有 version 字段" },
+          { ok: false, error: "开源仓 version.json 没有 version 字段" },
           { status: 502 },
         );
       const latest = {
         version: remote,
-        hash: j.sha.slice(0, 7),
-        message: (j.commit.message.split("\n")[0] || "").slice(0, 100),
-        date: j.commit.committer?.date || "",
+        hash: (j.hash || "").trim(),
+        message: (j.message || "").trim().slice(0, 100),
+        date: (j.date || "").trim(),
       };
       return Response.json({
         ok: true,
