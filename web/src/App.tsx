@@ -698,6 +698,34 @@ function Shell({
   const [voiceDefault, setVoiceDefault] = useState("");
   const [voiceCloud, setVoiceCloud] = useState(false);
   const [activeSession, setActiveSession] = useState("");
+  /**
+   * 正在换场。从点下去到新屋把状态推回来，中间那几秒屏幕上摆的还是旧那一场 ——
+   * 不遮一下，人看到的就是「点了没反应」，于是再点一次；两次切换的 state 互相追着改，
+   * 侧栏高亮就来回跳。遮罩 + 先把侧栏跳过去，是把这个空窗明说出来，而不是假装没有。
+   */
+  const [switching, setSwitching] = useState<{
+    id: string;
+    title: string;
+    mode: "new" | "switch";
+  } | null>(null);
+  /**
+   * 已经点了「新建」、但还没开出来的那一场。
+   *
+   * 新建不连屋：一间场屋就是一个完整的 DO 实例，点一下就建 ——
+   * 「点了没说话就走」会留下一间侧栏里看不见、界面上也删不掉的屋。
+   * 所以这里先只握着「屋名 + 场 id」（服务端已经算好；建 stub 不会实例化 DO），
+   * 等这一场的第一句话真要说出口了，再换连接把它开出来。
+   *
+   * 侧栏这时候不插行：还没说过一句话的位子不是一场对话，摆上去只会让列表
+   * 里出现一条点不开、也删不掉的假会话。真要开始了（第一句话落位、后端登记）
+   * 它自己会出现在列表里。
+   */
+  const [pendingRoom, setPendingRoom] = useState<{
+    id: string;
+    room: string;
+  } | null>(null);
+  /** 等着屋开出来再补发的那一句话 —— 只可能是这一场的第一句 */
+  const queuedSend = useRef<Parameters<typeof sendMessage>[0] | null>(null);
   const [drawer, setDrawer] = useState(false);
   /** 左边的笔记本抽屉。和会话列表抽屉互斥 —— 两块东西都贴左边，同时拉开只会叠在一起 */
   const [noteDrawer, setNoteDrawer] = useState(false);
@@ -757,10 +785,36 @@ function Shell({
   const noticeTimer = useRef(0);
   // 新建会话 / 整理的连点门闩：手机双击很常见，重入会造出两间互相覆盖的场屋
   const creatingRef = useRef(false);
+  /** 换场遮罩的保险丝（见 beginSwitch）：新屋一直不回话也得把遮罩撤掉 */
+  const switchFuse = useRef(0);
   // 朗读定序：每次朗读领一个自增 token，过期的 onEnd 不许清 speakingId（见 speakMsg）
   const speakToken = useRef(0);
 
+  /** 当前这一场。列表里没有它（刚点的新建、还没说过话）时就没有标题，走「新的对话」 */
   const current = sessions.find((s) => s.id === activeSession);
+
+  /**
+   * 摆到屏幕上的那一份消息。
+   *
+   * 换场期间先清空：手上这份还是上一场的（客户端只在收到消息推送时才换，
+   * 换屋和切场都有一段空窗），而遮罩是半透的磨砂 —— 摆出来等于把上一场的话
+   * 透给人看。服务端那边已经在连接时把这一场的历史推过来了（见 cowork 的
+   * onConnect），到位之前这里就是空的，正配上遮罩那句「正在切换」。
+   *
+   * 刚点的新建（pendingRoom）同理：新屋还没开，手上这份还是上一场的，
+   * 新场该是空的。
+   */
+  const shownMessages =
+    switching || pendingRoom || !agent.state ? [] : messages;
+
+  /**
+   * 界面上「现在这间屋」是哪一间。
+   *
+   * 站在刚点的新建上时，手上那条连接还挂在上一场上 —— 那一场已经不在眼前了，
+   * 名字盘、笔记本、附件这些按屋取的东西都该读人屋：这一场真要开出来时，
+   * 场屋就是从人屋那儿抄一份配置起步的（见 cowork 的 onConnect）。
+   */
+  const uiRoom = pendingRoom ? agentName : activeRoom;
 
   const flash = useCallback((text: string) => {
     setNotice(text);
@@ -768,6 +822,32 @@ function Shell({
     // 否则前一条的定时器会提前把后一条抹掉（「停下了」紧跟「已切换」就会闪一下没）
     window.clearTimeout(noticeTimer.current);
     noticeTimer.current = window.setTimeout(() => setNotice(""), 2500);
+  }, []);
+
+  /**
+   * 掀开换场遮罩，并压一根保险丝：新屋一直不回话（网断了、屋起不来）时
+   * 也得把遮罩撤掉 —— 把人锁在一层毛玻璃后面，比慢本身更糟。
+   * 保险丝烧断时如果手上还攥着等着补发的第一句话，那句话就是没发出去，
+   * 得说一声：默默吞掉比慢严重。
+   */
+  const beginSwitch = useCallback(
+    (id: string, title: string, mode: "new" | "switch") => {
+      setSwitching({ id, title, mode });
+      window.clearTimeout(switchFuse.current);
+      switchFuse.current = window.setTimeout(() => {
+        setSwitching(null);
+        if (queuedSend.current) {
+          queuedSend.current = null;
+          flash("新会话没接上，那句话我没发出去 —— 再说一次就行");
+        }
+      }, 15000);
+    },
+    [flash],
+  );
+
+  const endSwitch = useCallback(() => {
+    window.clearTimeout(switchFuse.current);
+    setSwitching(null);
   }, []);
 
   const nav = useCallback((v: ViewKey) => {
@@ -885,10 +965,38 @@ function Shell({
     };
   }, [isAdmin]);
 
-  // 「当前是哪一场」以后端为准：切会话、新建、被删都是它在改
+  // 「当前是哪一场」以后端为准：切会话、新建、被删都是它在改。
+  // 但换场途中要放行本地那次乐观跳转 —— 旧屋的 state 会晚到一步，
+  // 照单全收就会把刚点的那一场拽回去，看上去正是「乱跳会话」。
+  // 站在还没开出来的新场上同理：那一场后端还不知道（屋都没建），
+  // 位置只能本地拿着，这会儿后端说的「当前是上一场」不作数。
   useEffect(() => {
-    if (state.activeSession) setActiveSession(state.activeSession);
-  }, [state.activeSession]);
+    if (!state.activeSession) return;
+    if (switching && state.activeSession !== switching.id) return;
+    if (pendingRoom) return;
+    setActiveSession(state.activeSession);
+  }, [state.activeSession, switching, pendingRoom]);
+
+  // 新屋把状态推回来了：activeSession 落到目标上，就是「到了」，撤遮罩。
+  // 连接也认出来了才算数 —— 否则刚换连接、旧屋的 state 还挂在那儿时会被误判成到位。
+  //
+  // 补发也在这儿：等着的「第一句话」必须等屋真连上再发 —— 提前发就落到上一间屋里去了
+  // （换连接不是同步的，手上的 socket 还是旧的那条）。
+  useEffect(() => {
+    if (!switching) return;
+    if (!(agent.identified && state.activeSession === switching.id)) return;
+    endSwitch();
+    const q = queuedSend.current;
+    if (!q) return;
+    queuedSend.current = null;
+    sendMessage(q);
+  }, [
+    switching,
+    state.activeSession,
+    agent.identified,
+    endSwitch,
+    sendMessage,
+  ]);
 
   // 换了一场对话：那些独白属于上一场他那句话，别跟着搬过来。
   // 轮次号一起归零 —— 号是那边的屋子发的，换了场次手上的号就没意义了
@@ -947,15 +1055,17 @@ function Shell({
    */
   const setThink = useCallback(
     (mode: "normal" | "deep") => {
-      // 点名当前这间屋：连在场屋上时调的是那一场自己的开关，不动人屋的
+      // 点名当前这间屋：连在场屋上时调的是那一场自己的开关，不动人屋的。
+      // 站在「刚点的新建」上时写的是人屋（见 uiRoom）—— 新场屋开出来会从人屋
+      // 抄一份偏好，写进上一间场屋就成了「改了一场已经不在眼前的会话」。
       void api
-        .setThinkMode(mode, activeRoom)
+        .setThinkMode(mode, uiRoom)
         .then(() =>
           flash(mode === "deep" ? "好，接下来我多想一会儿" : "回到平常的节奏"),
         )
         .catch((e) => flash((e as Error).message));
     },
-    [activeRoom, flash],
+    [flash, uiRoom],
   );
 
   const send = useCallback(
@@ -987,15 +1097,29 @@ function Shell({
       // 「用说的发，就用说的回」：这是人对对话的默认期待，不用再教一遍
       voiceReply.current = dictated.current;
       dictated.current = false;
-      sendMessage({
+      const payload = {
         text,
         files: images?.length
           ? images.map((i) => ({ type: "file" as const, ...i }))
           : undefined,
-      });
+      };
+      // 这一场还没开屋（刚点的新建）：这句话就是它的第一句。
+      // 先把屋开出来，连上了再由上面那个 effect 补发 —— 现在发，落到的是上一间屋
+      if (pendingRoom) {
+        if (queuedSend.current) {
+          flash("这一场正在接上，等它一下");
+          return false;
+        }
+        queuedSend.current = payload;
+        beginSwitch(pendingRoom.id, "新会话", "new");
+        setActiveRoom(pendingRoom.room);
+        setPendingRoom(null);
+        return true;
+      }
+      sendMessage(payload);
       return true;
     },
-    [busy, flash, sendMessage],
+    [beginSwitch, busy, flash, pendingRoom, sendMessage],
   );
 
   const submit = () => {
@@ -1234,15 +1358,19 @@ function Shell({
     try {
       if (busy) halt(); // 换话题之前先让他停下，不然那个回答会追到新会话里
       setPending([]); // 攒着还没发的附件属于上一场的话题，别跟着搬过去
-      // 新对话 = 新开一间场屋：后端当场落好目录（home 指向新屋），人屋本尊一动不动。
-      // 前端拿 home 换连接 —— 旧场留在旧屋里继续收消息，不是「收拢旧场再开新的」
+      // 新对话 = 新开一间场屋。后端当场把场 id 和屋名算好（home），人屋本尊一动不动。
+      //
+      // 但这里**不换连接**：一间场屋就是一个完整的 DO 实例，连上去就要冷启动、
+      // 建库、跑迁移。「点了新建、一个字没说就走」会留下一间侧栏里看不见、
+      // 界面上也删不掉的屋 —— 所以屋先不开，等这一场的第一句话要说出口了再开
+      // （见 pendingRoom 与 send 里那一段）。拿 id 建 stub 不会实例化 DO，这一步不花钱。
       const meta = await api.createSession();
       if (meta?.home) {
-        setActiveRoom(meta.home);
         setActiveSession(meta.id);
+        setPendingRoom({ id: meta.id, room: meta.home });
       }
       await loadSessions();
-      flash("已开始新会话");
+      flash("新会话已就位，说第一句就开始");
     } catch (e) {
       flash((e as Error).message);
     } finally {
@@ -1292,13 +1420,22 @@ function Shell({
       if (id === activeSession) return;
       if (busy) halt(); // 同上：切走之前先收干净，别让回答串场
       setPending([]); // 待发的附件跟人走，不跟着会话走
+      const from = activeSession;
+      // 走开就等于把这间没开出来的屋作废 —— 它还没建，作废不掉任何东西
+      if (pendingRoom) {
+        queuedSend.current = null;
+        setPendingRoom(null);
+      }
+      // 先把侧栏跳到这一场、把遮罩盖上，再去谈连接和搬运 ——
+      // 老场宿在人屋时，后端要先清空再整场灌回，那段时间界面本来是一片空白
+      beginSwitch(id, title, "switch");
+      setActiveSession(id);
       try {
         const s = sessions.find((x) => x.id === id);
         if (s?.home) {
           // 场屋里的场：换连接就好。广播回来时 activeSession 会跟着对上
           jumpBottom.current = true; // 落到这场最新一条的末尾，不从开头翻起
           setActiveRoom(s.home);
-          setActiveSession(s.id);
           flash(`已切换到「${title}」`);
           return;
         }
@@ -1306,14 +1443,27 @@ function Shell({
         if (!meta) throw new Error("这场会话已经不在了");
         jumpBottom.current = true;
         setActiveRoom(agentName); // 回人屋：这场宿在人屋里（若本就人屋则原地不动）
-        setActiveSession(meta.id);
         await loadSessions();
         flash(`已切换到「${title}」`);
       } catch (e) {
+        // 没切成：把高亮和遮罩都退回原处，别让人停在一个不存在的场上
+        setActiveSession(from);
+        endSwitch();
         flash((e as Error).message);
       }
     },
-    [activeSession, agentName, busy, flash, halt, loadSessions, sessions],
+    [
+      activeSession,
+      agentName,
+      beginSwitch,
+      busy,
+      endSwitch,
+      flash,
+      halt,
+      loadSessions,
+      pendingRoom,
+      sessions,
+    ],
   );
 
   const renameSession = useCallback(
@@ -1496,7 +1646,7 @@ function Shell({
             <NoteDrawer
               open={noteDrawer}
               onClose={() => setNoteDrawer(false)}
-              room={activeRoom}
+              room={uiRoom}
               focusId={state.noteFocus}
             />
           )}
@@ -1546,8 +1696,10 @@ function Shell({
               </div>
               <div className="chat-actions">
                 {/* 上下文占用：上一轮烧了多少、窗口多宽（账跟着场走，
-                    换了一场或还没聊过都不显示）。点按切缓存命中详情，悬停也有 */}
-                {state.lastUsage &&
+                    换了一场或还没聊过都不显示）。点按切缓存命中详情，悬停也有。
+                    刚点的新建上也不显示：那笔账属于上一场，这会儿还没换过来 */}
+                {!pendingRoom &&
+                  state.lastUsage &&
                   state.lastUsage.sessionId === state.activeSession && (
                     <UsageChip usage={state.lastUsage} />
                   )}
@@ -1628,12 +1780,12 @@ function Shell({
                   不然人连「说一句告诉它坏在哪」的机会都没有 */}
               <Shield what="消息">
                 <Messages
-                  messages={messages}
+                  messages={shownMessages}
                   streaming={busy}
                   role={role}
                   thoughts={thoughts}
                   speakingId={speakingId}
-                  room={activeRoom}
+                  room={uiRoom}
                   onSpeak={speakMsg}
                   onRetry={retryMsg}
                   onFlash={flash}
@@ -1886,6 +2038,24 @@ function Shell({
                         : "Enter 发送 · Shift + Enter 换行 · 文件可以直接拖进来"}
               </p>
             </div>
+
+            {/* 换场/初次接入时的毛玻璃：底下的正文这会儿还是上一场（或空着），
+                与其让人以为「点了没反应」，不如明说正在换。遮罩期间下面的
+                消息区不接点击 —— 那会儿点什么都点不到正确的场上 */}
+            {(switching || !agent.state) && (
+              <div className="chat-switching" role="status" aria-live="polite">
+                <div className="chat-switching-card">
+                  <span className="spinner" />
+                  <p>
+                    {switching
+                      ? switching.mode === "new"
+                        ? "正在开启新会话…"
+                        : `正在切换到「${switching.title}」…`
+                      : "正在接入…"}
+                  </p>
+                </div>
+              </div>
+            )}
           </main>
         </div>
       )}
@@ -1895,7 +2065,7 @@ function Shell({
           侧栏放谁进来（canNotes），视图就得放谁进来，少一半就是整页空白。 */}
       {view === "note" && (isAdmin || canNotes) && (
         <Shield what="笔记本">
-          <NotePage state={state} onNav={nav} room={activeRoom} />
+          <NotePage state={state} onNav={nav} room={uiRoom} />
         </Shield>
       )}
 

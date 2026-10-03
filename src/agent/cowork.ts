@@ -973,6 +973,20 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
     const role: Role = info.role;
     conn.setState({ role });
 
+    // 把这一场的历史交给刚连上来的这条连接。
+    //
+    // 为什么必须由这里推：客户端那份消息库只在收到 cf_agent_chat_messages 时才换新，
+    // 而新开的场屋是空的、没有「又落了一条消息」这种事去触发广播 —— 不推这一下，
+    // 切过去看到的一直是上一场的话（标题已经变了，话还是老场的）。
+    // 人屋这边同理：切场是 clearConversation + persistMessages，广播给的是
+    // 「当时挂着的连接」；后来才连上的这条得自己拿一份，不能指望别人替它补。
+    conn.send(
+      JSON.stringify({
+        type: "cf_agent_chat_messages",
+        messages: this.messages,
+      }),
+    );
+
     // 多档来客：票里带着档位 id（v2/v3 票）。快照每次连接都现查 ——
     // 只在「档位 id 变了」才查的话，管理员调低权益后，旧房间还揣着旧快照照常用。
     // 查不到 / 停用 / 查询失败都落失效兜底（currentGuestType 内裁决）。
@@ -1025,6 +1039,9 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
           // 称呼也一并带上：寄回人屋的留痕要标「这是谁干的事」，
           // 名册报到用的也是它（场屋自己没走过进门介绍页）
           guestName: typeof cfg?.guestName === "string" ? cfg.guestName : "",
+          // 签名同理：它是「这个人是谁」的一部分，跟人走、不跟场走 ——
+          // 不抄的话，场屋里 identityBlock 读到的是一间空屋子，管理员就成了没名没姓的「管理员本人」
+          adminBio: typeof cfg?.adminBio === "string" ? cfg.adminBio : "",
         });
       } catch {
         // 抄不到（人屋没醒 / 出错）就用出厂默认，聊天照常
@@ -2714,8 +2731,18 @@ export class CoworkAgent extends AIChatAgent<Env, ChatState> {
    */
   private identityBlock(): string {
     if (this.speakerRole() === "admin") {
+      // 身份是门禁验过的，但「他叫什么、他怎么描述自己」只有他自己知道 ——
+      // 那两句在设置→个人信息里写着（称呼落在 guestName、签名落在 adminBio）。
+      // 从前这两句没进提示词，于是每场对话里他都只是「管理员本人」：
+      // 认得出来是谁，却叫不出名字，也读不到他给自己写的那句话。
+      const who = (this.state.guestName || "").trim().slice(0, 20);
+      const bio = (this.state.adminBio || "").trim().slice(0, 200);
       return (
         "\n\n---\n现在和我说话的是管理员本人——刚用管理员的钥匙开了门，身份已验证，不用再问他是谁。" +
+        (who ? `他给自己的称呼是「${who}」，就这么称呼他。` : "") +
+        (bio
+          ? `他在设置里写了一句自我介绍：「${bio}」，当他对自己的说明看。`
+          : "") +
         "直接接着办事：该记的记、该提醒的提醒、该拦的拦。\n---"
       );
     }

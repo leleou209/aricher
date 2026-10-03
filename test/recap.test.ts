@@ -769,7 +769,7 @@ describe("回想提示词：工程纪要口径", () => {
 
   it("写明「他默认已看到」—— 没接话不是没看到，别写成疑点", () => {
     expect(buildRecapPrompt("x").system).toContain("默认已经看过");
-    expect(buildRecapPrompt("x").system).toContain("不是没看到");
+    expect(buildRecapPrompt("x").system).toContain("安静的时段");
   });
 
   it("对话正文永远接在 user 里，不被覆盖值顶掉", () => {

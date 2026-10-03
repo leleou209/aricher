@@ -178,7 +178,7 @@ describe("逐工具 / 组尾 / 末栏 三处都能改", () => {
 describe("工具使用风格该写明的两件事", () => {
   it("主人那间：他默认已经看过我说的每条消息 —— 没人接话不等于没看到", () => {
     expect(styleDefault(false)).toContain("默认已经看过");
-    expect(styleDefault(false)).toContain("不是没看到");
+    expect(styleDefault(false)).toContain("都已经看到");
   });
 
   it("来客那间：以「没有哪些工具」为准，绝不编造不存在的功能", () => {

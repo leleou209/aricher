@@ -408,6 +408,8 @@ select.field {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* 换场遮罩要以它为定位基准 */
+  position: relative;
 }
 
 .chat-header {
@@ -455,6 +457,47 @@ select.field {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 换场 / 初次接入时的毛玻璃。
+   为什么是「磨砂」而不是「盖严」：底下那几条消息还是上一场的，模糊掉比彻底藏掉诚实 ——
+   人看得出东西还在、只是还没换过来。它同时挡住点击：这会儿点什么都落在错的那一场上。 */
+.chat-switching {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 先给不认 color-mix 的老浏览器一层实底，再往上叠半透明的 */
+  background: var(--yuzhe-bg);
+  background: color-mix(in srgb, var(--yuzhe-bg) 70%, transparent);
+  backdrop-filter: blur(14px) saturate(1.05);
+  -webkit-backdrop-filter: blur(14px) saturate(1.05);
+  animation: fade-in 0.18s ease;
+}
+
+.chat-switching-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: var(--yuzhe-surface);
+  border: 1px solid var(--yuzhe-line);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 12%);
+  font-size: 13px;
+  color: var(--yuzhe-ink-dim);
+}
+
+.chat-switching-card .spinner {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.chat-switching-card p {
+  margin: 0;
 }
 
 .messages-area {
